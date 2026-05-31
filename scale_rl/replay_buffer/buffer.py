@@ -199,7 +199,20 @@ class ReplayBuffer:
             True if a weight sync was performed this step.
         """
         self._trainer_steps += 1
+        logger.info(
+            "[replay buffer] trainer step {step} complete  "
+            "| buffer size: {buf}/{cap}  "
+            "| next sync in {remaining} step(s)",
+            step=self._trainer_steps,
+            buf=len(self._store),
+            cap=self._store.maxlen,
+            remaining=self.stale_steps - (self._trainer_steps % self.stale_steps),
+        )
         if self._trainer_steps % self.stale_steps == 0:
+            logger.info(
+                "[replay buffer] stale_steps={k} reached — triggering weight sync to vLLM",
+                k=self.stale_steps,
+            )
             self._sync_weights(train_model, model_update_group, packed=packed, fsdp=fsdp)
             return True
         return False

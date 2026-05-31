@@ -15,31 +15,30 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 CONFIG="${1:-${SCRIPT_DIR}/train.yaml}"
 
 # ---------------------------------------------------------------------------
-# Parse yaml helpers (no external deps — pure bash + python one-liners)
+# Parse all needed keys from the yaml in a single python call
 # ---------------------------------------------------------------------------
-yaml_get() {
-    python3 - "$CONFIG" "$1" <<'EOF'
+eval "$(python3 - "$CONFIG" <<'EOF'
 import sys, re
-path, key = sys.argv[1], sys.argv[2]
-with open(path) as f:
-    for line in f:
-        m = re.match(rf'^\s*{re.escape(key)}\s*:\s*(.+)', line)
-        if m:
-            print(m.group(1).strip().strip('"').strip("'"))
-            sys.exit(0)
-EOF
-}
 
-MODEL_PATH="$(yaml_get model_path)"
-DTYPE="$(yaml_get dtype)"
-ROLLOUT_WORKER_URL="$(yaml_get rollout_worker_url)"
-NUM_TRAINER_GPUS="$(yaml_get num_trainer_gpus)"
-VLLM_GPU_ID="$(yaml_get vllm_gpu_id)"
-VLLM_GPU_MEM="$(yaml_get vllm_gpu_memory_utilization)"
-VLLM_TP_SIZE="$(yaml_get vllm_tensor_parallel_size)"
-VLLM_BACKEND="$(yaml_get vllm_weight_transfer_backend)"
-VLLM_CLEAR_KV="$(yaml_get vllm_clear_kv_cache)"
-MASTER_PORT="$(yaml_get master_port)"
+keys = [
+    "model_path", "dtype", "rollout_worker_url", "num_trainer_gpus",
+    "vllm_gpu_id", "vllm_gpu_memory_utilization", "vllm_tensor_parallel_size",
+    "vllm_weight_transfer_backend", "vllm_clear_kv_cache", "master_port",
+]
+want = set(keys)
+found = {}
+with open(sys.argv[1]) as f:
+    for line in f:
+        m = re.match(r'^\s*(\w+)\s*:\s*(.+)', line)
+        if m and m.group(1) in want:
+            found[m.group(1)] = m.group(2).strip().strip('"').strip("'")
+
+for k in keys:
+    v = found.get(k, "")
+    # export as uppercase shell variable
+    print(f'{k.upper()}={v!r}')
+EOF
+)"
 
 # Extract host and port from the worker URL (http://host:port)
 WORKER_HOST="$(echo "$ROLLOUT_WORKER_URL" | sed 's|http://||' | cut -d: -f1)"
@@ -67,7 +66,7 @@ echo "============================================================"
 # ---------------------------------------------------------------------------
 echo "[1/3] Starting vLLM rollout worker on GPU $VLLM_GPU_ID ..."
 
-CUDA_VISIBLE_DEVICES="$VLLM_GPU_ID" python3 -m scale_rl.inference.rollout_worker \
+CUDA_VISIBLE_DEVICES="$VLLM_GPU_ID" uv run python3 -m scale_rl.inference.rollout_worker \
     --model        "$MODEL_PATH" \
     --host         "$WORKER_HOST" \
     --port         "$WORKER_PORT" \
@@ -118,7 +117,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 CUDA_VISIBLE_DEVICES="$TRAINER_GPUS" \
-torchrun \
+uv run torchrun \
     --nproc-per-node="$NUM_TRAINER_GPUS" \
     --master-port="$MASTER_PORT" \
     -m scale_rl.scripts.train_entry \

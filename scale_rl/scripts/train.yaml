@@ -42,7 +42,7 @@ max_seq_len: 4096
 # Total rollouts per collection round = prompts_per_batch * rollouts_per_step
 # ---------------------------------------------------------------------------
 prompts_per_batch: 16
-rollouts_per_step: 8   # G in GRPO/DAPO
+rollouts_per_step: 4   # G in GRPO/DAPO
 stale_steps: 8         # sync trainer → vLLM every K gradient updates
 rollout_worker_url: "http://127.0.0.1:8047"
 
@@ -70,6 +70,7 @@ weight_transfer_packed: true
 # ---------------------------------------------------------------------------
 total_steps: 1000
 log_every: 10
+high_pass_rate_threshold: 0.9
 
 # ---------------------------------------------------------------------------
 # Infrastructure

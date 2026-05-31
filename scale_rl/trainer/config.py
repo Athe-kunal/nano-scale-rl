@@ -47,3 +47,4 @@ class TrainerConfig:
     # Training loop
     total_steps: int = 1000
     log_every: int = 10
+    high_pass_rate_threshold: float = 0.9

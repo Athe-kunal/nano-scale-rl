@@ -172,18 +172,6 @@ class Trainer:
         nn.utils.clip_grad_norm_(self.model.parameters(), cfg.max_grad_norm)
         self.optimizer.step()
 
-        synced = self.buffer.on_trainer_step(
-            self.model,
-            self.model_update_group,
-            packed=cfg.weight_transfer_packed,
-            fsdp=True,
-        )
-        if synced and self.rank == 0:
-            logger.info(
-                "Weights synced to vLLM at trainer step %d.",
-                self.buffer.trainer_steps,
-            )
-
         with torch.no_grad():
             ratio = (logprobs - tensors["inference_logprobs"]).exp()
             mask = response_mask.float()
@@ -193,11 +181,40 @@ class Trainer:
                 .float().mul(mask).sum() / n_tok
             ).item()
 
-        return {
+        metrics = {
             "loss": loss.item(),
             "clip_frac": clip_frac,
             "mean_reward": rewards.mean().item(),
         }
+
+        if self.rank == 0:
+            logger.info(
+                "[trainer step {step}] loss={loss:.4f}  clip_frac={clip_frac:.3f}"
+                "  mean_reward={mean_reward:.4f}  algorithm={algo}",
+                step=self.buffer.trainer_steps + 1,  # +1: incremented inside on_trainer_step
+                loss=metrics["loss"],
+                clip_frac=metrics["clip_frac"],
+                mean_reward=metrics["mean_reward"],
+                algo=cfg.algorithm,
+            )
+
+        synced = self.buffer.on_trainer_step(
+            self.model,
+            self.model_update_group,
+            packed=cfg.weight_transfer_packed,
+            fsdp=True,
+        )
+        if synced and self.rank == 0:
+            logger.info(
+                "[weight sync] trainer step {step} → vLLM  "
+                "(every {k} steps, packed={packed}, fsdp={fsdp})",
+                step=self.buffer.trainer_steps,
+                k=cfg.stale_steps,
+                packed=cfg.weight_transfer_packed,
+                fsdp=True,
+            )
+
+        return metrics
 
     # ------------------------------------------------------------------
     # Full training loop
@@ -241,19 +258,31 @@ class Trainer:
 
         global_step = 0
         prompt_idx = 0
-        n_prompts = len(prompts)
+        # Build the active pool — envs flagged high_pass_rate are excluded.
+        active_indices = [i for i, e in enumerate(envs) if not e.high_pass_rate]
+        HIGH_PASS_THRESHOLD = cfg.high_pass_rate_threshold
 
         while global_step < cfg.total_steps:
+            # Refresh active pool each round (flags may have been set last round).
+            active_indices = [i for i, e in enumerate(envs) if not e.high_pass_rate]
+            if not active_indices:
+                if self.rank == 0:
+                    logger.warning(
+                        "All {} prompts have high_pass_rate=True — nothing left to train on.",
+                        len(envs),
+                    )
+                break
+
             # ---- generate rollouts (rank 0 drives the HTTP call) ----
-            batch_prompts = [
-                prompts[(prompt_idx + i) % n_prompts]
+            # Cycle through the active pool only.
+            n_active = len(active_indices)
+            batch_indices = [
+                active_indices[(prompt_idx + i) % n_active]
                 for i in range(cfg.prompts_per_batch)
             ]
-            batch_envs = [
-                envs[(prompt_idx + i) % n_prompts]
-                for i in range(cfg.prompts_per_batch)
-            ]
-            prompt_idx += cfg.prompts_per_batch
+            batch_prompts = [prompts[i] for i in batch_indices]
+            batch_envs   = [envs[i]    for i in batch_indices]
+            prompt_idx   += cfg.prompts_per_batch
 
             if self.rank == 0:
                 rollouts = generate_rollouts_remote(
@@ -267,10 +296,31 @@ class Trainer:
                 # Rollouts are ordered: [prompt_0 × G, prompt_1 × G, ...]
                 rewards: list[float] = []
                 for i, env in enumerate(batch_envs):
+                    group_rewards: list[float] = []
                     for g in range(cfg.rollouts_per_step):
                         r = rollouts[i * cfg.rollouts_per_step + g]["response"]
                         reward, _ = env.compute_reward(r)
                         rewards.append(reward)
+                        group_rewards.append(reward)
+
+                    # Mark env if binary pass rate >= threshold.
+                    pass_rate = sum(group_rewards) / len(group_rewards)
+                    if pass_rate >= HIGH_PASS_THRESHOLD and not env.high_pass_rate:
+                        env.high_pass_rate = True
+                        logger.info(
+                            "[high_pass_rate] prompt idx={idx} marked — "
+                            "pass_rate={rate:.2f} >= {thresh:.2f}, will be skipped henceforth.",
+                            idx=batch_indices[i],
+                            rate=pass_rate,
+                            thresh=HIGH_PASS_THRESHOLD,
+                        )
+
+                newly_filtered = sum(1 for e in envs if e.high_pass_rate)
+                logger.info(
+                    "[high_pass_rate] {filtered}/{total} prompts filtered out so far.",
+                    filtered=newly_filtered,
+                    total=len(envs),
+                )
 
                 self.buffer.add(rollouts, rewards)
 

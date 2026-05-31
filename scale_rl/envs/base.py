@@ -18,6 +18,7 @@ class ScaleRLBase(BaseTextEnv):
         super().__init__()
         self.kind = kind
         self.dataset = dataset
+        self.high_pass_rate: bool = False
 
     @abc.abstractmethod
     def init(self, prompt: ConversationType) -> tuple[ConversationType, dict[str, Any]]:
