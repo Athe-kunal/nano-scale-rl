@@ -1,0 +1,88 @@
+# Pipeline RL training configuration
+# All keys map 1-to-1 onto TrainerConfig (scale_rl/trainer/config.py).
+
+# ---------------------------------------------------------------------------
+# Model
+# ---------------------------------------------------------------------------
+model_path: "Qwen/Qwen2.5-1.5B-Instruct"
+dtype: "bfloat16"
+
+# ---------------------------------------------------------------------------
+# Dataset
+# ---------------------------------------------------------------------------
+dataset_id: "open-r1/DAPO-Math-17k-Processed"
+dataset_config: "all"
+dataset_split: "train"
+
+# ---------------------------------------------------------------------------
+# Optimiser
+# ---------------------------------------------------------------------------
+lr: 1.0e-6
+weight_decay: 0.01
+max_grad_norm: 1.0
+
+# ---------------------------------------------------------------------------
+# RL algorithm
+# grpo | dapo | reinforce | gspo | cispo | maxrl
+# ---------------------------------------------------------------------------
+algorithm: "cispo"
+clip_eps: 0.2          # symmetric clip for grpo/gspo (ignored by dapo)
+clip_low: 0.8          # dapo asymmetric lower bound
+clip_high: 0.28        # dapo asymmetric upper bound
+kl_coef: 0.0           # KL penalty coefficient (0 = disabled)
+tis_C: 0.0             # temporal IS truncation threshold (0 = disabled)
+
+# ---------------------------------------------------------------------------
+# Sequence
+# ---------------------------------------------------------------------------
+max_seq_len: 4096
+
+# ---------------------------------------------------------------------------
+# Rollout / replay buffer
+# Total rollouts per collection round = prompts_per_batch * rollouts_per_step
+# ---------------------------------------------------------------------------
+prompts_per_batch: 16
+rollouts_per_step: 8   # G in GRPO/DAPO
+stale_steps: 8         # sync trainer → vLLM every K gradient updates
+rollout_worker_url: "http://127.0.0.1:8047"
+
+# ---------------------------------------------------------------------------
+# Generation (vLLM rollout worker)
+# ---------------------------------------------------------------------------
+max_new_tokens: 1024
+temperature: 1.0
+top_k: -1              # -1 = disabled
+
+# ---------------------------------------------------------------------------
+# FSDP
+# ---------------------------------------------------------------------------
+sync_module_states: true
+
+# ---------------------------------------------------------------------------
+# NCCL weight transfer (trainer → vLLM)
+# ---------------------------------------------------------------------------
+master_address: "127.0.0.1"
+master_port: 29600
+weight_transfer_packed: true
+
+# ---------------------------------------------------------------------------
+# Training loop
+# ---------------------------------------------------------------------------
+total_steps: 1000
+log_every: 10
+
+# ---------------------------------------------------------------------------
+# Infrastructure
+# ---------------------------------------------------------------------------
+# Number of trainer GPUs (torchrun --nproc-per-node).
+# The vLLM worker occupies one additional GPU on the same node.
+num_trainer_gpus: 1
+
+# GPU index reserved for the vLLM rollout worker.
+vllm_gpu_id: 1
+
+# vLLM engine settings (passed to rollout_worker.py)
+vllm_gpu_memory_utilization: 0.6
+vllm_tensor_parallel_size: 1
+vllm_weight_transfer_backend: "nccl"
+vllm_clear_kv_cache: false

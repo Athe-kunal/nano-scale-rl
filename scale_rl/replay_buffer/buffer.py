@@ -1,0 +1,233 @@
+"""
+Replay buffer for pipeline RL (DAPO / GRPO style).
+
+Terminology
+-----------
+  prompts_per_batch  – number of *distinct* prompts that constitute one
+                       trainer update batch.
+  rollouts_per_step  – number of sampled completions per prompt (the G
+                       factor in GRPO/DAPO).  Total items per batch =
+                       prompts_per_batch * rollouts_per_step.
+  stale_steps  (K)   – push updated trainer weights into the vLLM worker
+                       every K trainer update steps.
+
+Typical call sequence
+---------------------
+  buf = ReplayBuffer(prompts_per_batch=16, rollouts_per_step=8,
+                     stale_steps=4, rollout_worker_url="http://127.0.0.1:8047")
+  buf.add(rollouts, rewards)    # called after each vLLM generation round
+  while buf.is_ready():
+      batch = buf.sample()      # returns one batch and drains it from the buffer
+      loss = trainer.step(batch)
+      buf.on_trainer_step(step, train_model, model_update_group)
+"""
+
+from __future__ import annotations
+
+from collections import deque
+from typing import Any
+
+from scale_rl.inference.models import RolloutRecord
+
+from loguru import logger
+
+
+class ReplayBuffer:
+    """
+    FIFO replay buffer that drives the trainer update and vLLM weight-sync
+    schedule for pipeline RL.
+
+    Parameters
+    ----------
+    prompts_per_batch:
+        Number of distinct prompts in one trainer batch.
+    rollouts_per_step:
+        Number of sampled rollouts per prompt (G in GRPO/DAPO).
+    stale_steps:
+        Sync trainer → vLLM weights every this many trainer update steps.
+        Set to 1 for on-policy (sync after every update).
+    rollout_worker_url:
+        HTTP base URL of the running rollout worker, e.g.
+        ``"http://127.0.0.1:8047"``.  Required when ``stale_steps > 0``.
+    max_size:
+        Maximum number of ``RolloutRecord`` objects kept in the buffer.
+        Oldest items are evicted when the cap is exceeded.  Defaults to
+        ``4 * prompts_per_batch * rollouts_per_step``.
+    """
+
+    def __init__(
+        self,
+        prompts_per_batch: int,
+        rollouts_per_step: int,
+        stale_steps: int,
+        rollout_worker_url: str,
+        max_size: int | None = None,
+    ) -> None:
+        if prompts_per_batch <= 0:
+            raise ValueError("prompts_per_batch must be > 0")
+        if rollouts_per_step <= 0:
+            raise ValueError("rollouts_per_step must be > 0")
+        if stale_steps <= 0:
+            raise ValueError("stale_steps must be > 0")
+
+        self.prompts_per_batch = prompts_per_batch
+        self.rollouts_per_step = rollouts_per_step
+        self.stale_steps = stale_steps
+        self.rollout_worker_url = rollout_worker_url
+
+        self._batch_size: int = prompts_per_batch * rollouts_per_step
+        _max = max_size if max_size is not None else 4 * self._batch_size
+        self._store: deque[RolloutRecord] = deque(maxlen=_max)
+
+        # Number of trainer update steps completed so far.
+        self._trainer_steps: int = 0
+
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
+
+    @property
+    def trainer_steps(self) -> int:
+        return self._trainer_steps
+
+    def __len__(self) -> int:
+        return len(self._store)
+
+    def add(self, rollouts: list[dict[str, Any]], rewards: list[float]) -> None:
+        """
+        Ingest a batch of rollouts produced by the vLLM worker together with
+        their scalar rewards.
+
+        ``rollouts`` is the list returned by ``generate_rollouts`` /
+        ``generate_rollouts_remote``.  ``rewards`` must have the same length.
+
+        If the buffer would exceed ``max_size``, the oldest records are
+        automatically evicted (``deque(maxlen=…)`` handles this).
+        """
+        if len(rollouts) != len(rewards):
+            raise ValueError(
+                f"rollouts ({len(rollouts)}) and rewards ({len(rewards)}) "
+                "must have the same length"
+            )
+        for rollout, reward in zip(rollouts, rewards):
+            self._store.append(
+                RolloutRecord(
+                    prompt=rollout["prompt"],
+                    response=rollout["response"],
+                    prompt_ids=rollout["prompt_ids"],
+                    response_ids=rollout["response_ids"],
+                    inference_logprobs=rollout["inference_logprobs"],
+                    reward=reward,
+                )
+            )
+        logger.debug(
+            "Replay buffer: added %d records, total %d / capacity %d.",
+            len(rollouts),
+            len(self._store),
+            self._store.maxlen,
+        )
+
+    def is_ready(self) -> bool:
+        """Return True when at least one full trainer batch is available."""
+        return len(self._store) >= self._batch_size
+
+    def sample(self) -> dict[str, Any]:
+        """
+        Drain exactly one batch (``prompts_per_batch * rollouts_per_step``
+        records) from the *front* of the buffer and return it as a dict
+        consumable by ``prepare_batch``.
+
+        Raises ``RuntimeError`` if the buffer does not yet hold a full batch.
+        Use ``is_ready()`` before calling.
+        """
+        if not self.is_ready():
+            raise RuntimeError(
+                f"Buffer not ready: {len(self._store)} < {self._batch_size} records."
+            )
+        records: list[RolloutRecord] = [
+            self._store.popleft() for _ in range(self._batch_size)
+        ]
+        rollouts = [
+            {
+                "prompt": r.prompt,
+                "response": r.response,
+                "prompt_ids": r.prompt_ids,
+                "response_ids": r.response_ids,
+                "inference_logprobs": r.inference_logprobs,
+            }
+            for r in records
+        ]
+        rewards = [r.reward for r in records]
+        logger.debug(
+            "Replay buffer: sampled %d records, %d remaining.",
+            self._batch_size,
+            len(self._store),
+        )
+        return {"rollouts": rollouts, "rewards": rewards}
+
+    def on_trainer_step(
+        self,
+        train_model: Any,
+        model_update_group: Any,
+        *,
+        packed: bool = True,
+        fsdp: bool = False,
+    ) -> bool:
+        """
+        Call this once after each trainer gradient update.
+
+        Increments the internal step counter and, every ``stale_steps``
+        updates, pushes the trainer's current weights into the vLLM worker
+        in-place via NCCL.
+
+        Parameters
+        ----------
+        train_model:
+            The (possibly DDP/FSDP-wrapped) trainer model.
+        model_update_group:
+            The NCCL process group shared between the trainer and the vLLM
+            worker, returned by ``torch.distributed.new_group``.
+        packed:
+            Whether to send weights as a single packed tensor (faster).
+        fsdp:
+            Set to True when using FSDP so full tensors are gathered before
+            sending.
+
+        Returns
+        -------
+        bool
+            True if a weight sync was performed this step.
+        """
+        self._trainer_steps += 1
+        if self._trainer_steps % self.stale_steps == 0:
+            self._sync_weights(train_model, model_update_group, packed=packed, fsdp=fsdp)
+            return True
+        return False
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _sync_weights(
+        self,
+        train_model: Any,
+        model_update_group: Any,
+        *,
+        packed: bool,
+        fsdp: bool,
+    ) -> None:
+        from scale_rl.inference.rollout import sync_weights_to_vllm_inplace
+
+        logger.info(
+            "Syncing trainer weights to vLLM worker at step %d (every %d steps).",
+            self._trainer_steps,
+            self.stale_steps,
+        )
+        sync_weights_to_vllm_inplace(
+            train_model,
+            self.rollout_worker_url,
+            model_update_group,
+            packed=packed,
+            fsdp=fsdp,
+        )
+        logger.info("Weight sync to vLLM complete.")

@@ -23,21 +23,16 @@ import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
 import time
-import logging
 from typing import Literal
 from transformers import AutoTokenizer
 from vllm import LLM
 from vllm.config import WeightTransferConfig
 from scale_rl.inference.rollout import generate_rollouts
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
-)
-logger = logging.getLogger("nanorl.rollout_worker")
+from loguru import logger
 
 class RolloutState:
-    def __init__(self, model_path, tokenizer_path, dtype, gpu_memory_utilization, tensor_parallel_size,weight_transfer_backend, clear_kv_cache: bool):
+    def __init__(self, model_path: str, tokenizer_path: str, dtype: str, gpu_memory_utilization: float, tensor_parallel_size: int, weight_transfer_backend: Literal["nccl", "ipc"] = "nccl", clear_kv_cache: bool = False):
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token

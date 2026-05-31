@@ -9,7 +9,6 @@ uses `generate_rollouts` from this module.
 
 import json
 import time
-import logging
 from typing import Any
 import urllib.error
 import urllib.request
@@ -18,11 +17,7 @@ from vllm.distributed.weight_transfer.nccl_engine import NCCLWeightTransferEngin
 
 import torch
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
-)
-logger = logging.getLogger("nanorl.rollout_worker")
+from loguru import logger
 
 def get_logprobs(model, input_ids, attention_mask, response_mask):
     """Compute per-response-token log-probs under `model`.
