@@ -9,7 +9,7 @@ uses `generate_rollouts` from this module.
 
 import json
 import time
-from loguru import logger
+import logging
 from typing import Any
 import urllib.error
 import urllib.request
@@ -17,7 +17,37 @@ from vllm import SamplingParams
 from vllm.distributed.weight_transfer.nccl_engine import NCCLWeightTransferEngine, NCCLTrainerSendWeightsArgs
 
 import torch
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("nanorl.rollout_worker")
+
+def get_logprobs(model, input_ids, attention_mask, response_mask):
+    """Compute per-response-token log-probs under `model`.
+
+    Returns a tuple ``(token_logprobs, shift_mask)`` each of shape ``[B, T-1]``:
+      - ``token_logprobs[b, t] = log π_θ(input_ids[b, t+1] | input_ids[b, :t+1])``
+      - ``shift_mask[b, t] = 1.0`` iff ``input_ids[b, t+1]`` is a response token.
+
+    Per-token (not per-sequence) log-probs are required so that PPO/DAPO/GRPO
+    can apply per-token importance ratios and per-token clipping — the
+    sample-level masked-mean form makes the clip bounds essentially non-
+    functional (the geometric mean of many per-token ratios is always ≈ 1).
+    """
+    with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+        logits = model(input_ids=input_ids, attention_mask=attention_mask).logits
+    # Shift: logits[t] predicts token[t+1]
+    shift_logits = logits[:, :-1, :]
+    shift_labels = input_ids[:, 1:]
+    shift_mask = response_mask[:, 1:]
+    # log_softmax(x)[k] = x[k] - logsumexp(x). logsumexp saves only [B,T] for
+    # backward vs log_softmax's [B,T,V] — avoids a ~V× persistent allocation.
+    gathered = shift_logits.gather(-1, shift_labels.unsqueeze(-1)).squeeze(-1)
+    token_logprobs = gathered - torch.logsumexp(shift_logits, dim=-1)
+    return token_logprobs, shift_mask
+
 
 def generate_rollouts(vllm_engine, tokenizer, prompts, num_samples, max_new_tokens,
                       temperature, top_k):
@@ -51,7 +81,6 @@ def generate_rollouts(vllm_engine, tokenizer, prompts, num_samples, max_new_toke
                 "inference_logprobs": inference_logprobs,
             })
     return results
-
 
 
 def _remote_json_request(base_url, method, path, payload=None, timeout=600):
@@ -112,19 +141,15 @@ def generate_rollouts_remote(base_url, prompts, num_samples, max_new_tokens,
     return resp["rollouts"]
 
 
-def prepare_batch(rollouts, tokenizer, max_seq_len, device):
+def prepare_batch(rollouts, rewards, tokenizer, max_seq_len, device):
     """Pack a list of rollouts into padded training tensors."""
     input_ids_list = []
     response_mask_list = []
-    inference_logprobs_list = []
+    prompt_lens = []
+    response_lens = []
     for rollout in rollouts:
         prompt_ids = rollout["prompt_ids"]
         response_ids = rollout["response_ids"]
-        if len(prompt_ids) >= max_seq_len:
-            raise ValueError(
-                f"Prompt length ({len(prompt_ids)}) >= max_seq_len ({max_seq_len}); "
-                "no space left for response tokens. Increase --max-seq-len."
-            )
         full_ids = prompt_ids + response_ids
         if len(full_ids) > max_seq_len:
             full_ids = full_ids[:max_seq_len]
@@ -132,25 +157,31 @@ def prepare_batch(rollouts, tokenizer, max_seq_len, device):
         mask = [0] * len(prompt_ids) + [1] * len(response_ids)
         input_ids_list.append(full_ids)
         response_mask_list.append(mask)
-
-        # Align inference logprobs with the full sequence: 0.0 for prompt positions,
-        # then the per-response-token vLLM logprobs (truncated if the response was truncated).
-        inf_lp = rollout.get("inference_logprobs", [])
-        inf_lp_aligned = [0.0] * len(prompt_ids) + list(inf_lp)[: len(response_ids)]
-        inference_logprobs_list.append(inf_lp_aligned)
+        prompt_lens.append(len(prompt_ids))
+        response_lens.append(len(response_ids))
 
     max_len = max(len(ids) for ids in input_ids_list)
     pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
     padded_ids = [ids + [pad_id] * (max_len - len(ids)) for ids in input_ids_list]
     padded_masks = [m + [0] * (max_len - len(m)) for m in response_mask_list]
     attn_masks = [[1] * len(ids) + [0] * (max_len - len(ids)) for ids in input_ids_list]
-    padded_inf_lp = [lp + [0.0] * (max_len - len(lp)) for lp in inference_logprobs_list]
+
+    # Build inference_logprobs aligned with shift_mask shape [B, max_len-1].
+    # token_logprobs[b, t] = logprob of input_ids[b, t+1], so response token i
+    # (0-indexed within the response) lands at position P-1+i in the shifted tensor.
+    inf_lp_list = []
+    for rollout, P, R in zip(rollouts, prompt_lens, response_lens):
+        row = [0.0] * (max_len - 1)
+        for i, lp in enumerate(rollout["inference_logprobs"][:R]):
+            row[P - 1 + i] = lp
+        inf_lp_list.append(row)
 
     return {
         "input_ids": torch.tensor(padded_ids, dtype=torch.long, device=device),
         "attention_mask": torch.tensor(attn_masks, dtype=torch.long, device=device),
         "response_mask": torch.tensor(padded_masks, dtype=torch.float, device=device),
-        "inference_logprobs": torch.tensor(padded_inf_lp, dtype=torch.float32, device=device),
+        "rewards": torch.tensor(rewards, dtype=torch.float, device=device),
+        "inference_logprobs": torch.tensor(inf_lp_list, dtype=torch.float, device=device),
     }
 
 def _dtype_name(dtype: torch.dtype) -> str:
@@ -158,11 +189,11 @@ def _dtype_name(dtype: torch.dtype) -> str:
 
 
 def _iter_fsdp_full_params(model):
-    # summon_full_params temporarily gathers shards and exposes parameters
-    # under their original (non-flattened) names instead of FSDP's _flat_param.
-    with FSDP.summon_full_params(model, writeback=False, recurse=True):
-        for name, param in model.named_parameters():
-            yield name, param.detach().clone()
+    for name, param in model.named_parameters():
+        if hasattr(param, "full_tensor"):
+            yield name, param.full_tensor()
+            continue
+        yield name, param
 
 
 def _iter_model_parameters(model, fsdp: bool):
@@ -175,9 +206,7 @@ def collect_weight_metadata(model, fsdp: bool = False) -> dict[str, Any]:
     names: list[str] = []
     dtype_names: list[str] = []
     shapes: list[list[int]] = []
-    # Consume the generator fully so summon_full_params context stays open
-    # for the duration of metadata collection.
-    for name, param in list(_iter_model_parameters(model, fsdp=fsdp)):
+    for name, param in _iter_model_parameters(model, fsdp=fsdp):
         names.append(name)
         dtype_names.append(_dtype_name(param.dtype))
         shapes.append(list(param.shape))
@@ -222,9 +251,7 @@ def sync_weights_to_vllm_inplace(
 ):
     """Sync trainer weights into the running vLLM worker without checkpoints."""
 
-    # For FSDP, keep the FSDP wrapper so summon_full_params can unshard params
-    # with their original names. For non-FSDP (e.g. DDP), unwrap .module.
-    if not fsdp and hasattr(train_model, "module"):
+    if hasattr(train_model, "module"):
         train_model = train_model.module
 
     metadata = collect_weight_metadata(train_model, fsdp=fsdp)
@@ -264,5 +291,4 @@ def remote_vllm_init_weight_transfer(
     if not resp or not resp.get("ok"):
         raise RuntimeError(f"rollout worker weight-transfer init failed: {resp}")
     return resp
-
 

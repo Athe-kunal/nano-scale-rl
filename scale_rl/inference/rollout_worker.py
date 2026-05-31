@@ -23,14 +23,21 @@ import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
 import time
-from loguru import logger
+import logging
+from typing import Literal
 from transformers import AutoTokenizer
 from vllm import LLM
 from vllm.config import WeightTransferConfig
-from opd.generator.rollout import generate_rollouts
+from scale_rl.inference.rollout import generate_rollouts
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("nanorl.rollout_worker")
 
 class RolloutState:
-    def __init__(self, model_path, tokenizer_path, dtype, gpu_memory_utilization, tensor_parallel_size,weight_transfer_backend):
+    def __init__(self, model_path, tokenizer_path, dtype, gpu_memory_utilization, tensor_parallel_size,weight_transfer_backend, clear_kv_cache: bool):
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -50,6 +57,7 @@ class RolloutState:
             "trust_remote_code": True,
             "disable_log_stats": True,
         }
+        self.clear_kv_cache = clear_kv_cache
         if weight_transfer_backend:
             # Backend can be IPC (colocate trainer and inference) or nccl (different gpus).
             # Do NOT set load_format="dummy" — the trainer pushes weights at end-of-step,
@@ -117,13 +125,14 @@ class RolloutState:
             self._is_generation_paused = False
             raise RuntimeError(f"in-place weight update failed: {err}") from err
         # Clear out the KV cache in vLLM
-        self.engine.reset_prefix_cache()
+        if self.clear_kv_cache:
+            self.engine.reset_prefix_cache()
         with self._pause_lock:
             self._is_generation_paused = False
-        logger.info("In-place vLLM update completed and prefix cache reset.")
+        logger.info(f"In-place vLLM update completed and KV cache clearance is set to {self.clear_kv_cache}")
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "opd-rollout-worker/0.1"
+    server_version = "nanochat-rollout-worker/0.1"
 
     def _read_json(self):
         length = int(self.headers.get("Content-Length", "0"))
@@ -196,7 +205,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="opd rollout worker")
+    parser = argparse.ArgumentParser(description="nanochat rollout worker")
     parser.add_argument("--model", type=str, required=True)
     parser.add_argument("--tokenizer", type=str, default="")
     parser.add_argument("--host", type=str, default="127.0.0.1")
@@ -204,6 +213,7 @@ def main():
     parser.add_argument("--dtype", type=str, default="bfloat16")
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.6)
     parser.add_argument("--tensor-parallel-size", type=int, default=1)
+    parser.add_argument("--clear-kv-cache", type=bool, default=False)
     parser.add_argument("--weight-transfer-backend", type=str, default="nccl",
                         choices=["nccl", "ipc"], help="Backend for inplace weight transfer (nccl or ipc)")
     args = parser.parse_args()
@@ -216,6 +226,7 @@ def main():
         gpu_memory_utilization=args.gpu_memory_utilization,
         tensor_parallel_size=args.tensor_parallel_size,
         weight_transfer_backend=args.weight_transfer_backend,
+        clear_kv_cache=args.clear_kv_cache
     )
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
