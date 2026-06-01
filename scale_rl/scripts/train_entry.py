@@ -10,10 +10,8 @@ Launch via train.sh (which also starts the vLLM rollout worker).
 from __future__ import annotations
 
 import argparse
-import os
-
-import torch
 import torch.distributed as dist
+
 from omegaconf import OmegaConf
 from loguru import logger
 
@@ -45,13 +43,10 @@ def main() -> None:
     dataset_split  = raw_yaml.get("dataset_split",  "train")
 
     # ---- device mesh for FSDP ----
+    # Single-node: 1D mesh over all trainer GPUs → FULL_SHARD.
+    # Multi-node:  2D mesh (num_nodes, gpus_per_node) → HYBRID_SHARD.
+    # dp_utils.py picks the right ShardingStrategy based on mesh.ndim.
     device_mesh = dist.device_mesh.init_device_mesh("cuda", (world_size,))
-
-    # ---- NCCL group: trainer ranks + vLLM worker rank ----
-    # The vLLM worker registers itself at rank = world_size (rank_offset in
-    # remote_vllm_init_weight_transfer).  We include it in the update group.
-    all_ranks = list(range(world_size + 1))
-    model_update_group = dist.new_group(ranks=all_ranks, backend="nccl")
 
     # ---- dataset ----
     if rank == 0:
@@ -70,7 +65,7 @@ def main() -> None:
         logger.info("Dataset loaded: %d examples.", len(records))
 
     # ---- trainer ----
-    trainer = Trainer(cfg, device_mesh=device_mesh, model_update_group=model_update_group)
+    trainer = Trainer(cfg, device_mesh=device_mesh)
 
     try:
         trainer.train(envs=envs, prompts=prompts)

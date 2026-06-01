@@ -60,7 +60,7 @@ def compute_advantages(
     their group size) may pass ``num_samples_per_prompt=1`` and receive
     the batch-mean-subtracted version.
     """
-    if algorithm in ("grpo", "dapo", "gspo"):
+    if algorithm in ("grpo", "dapo", "gspo", "cispo"):
         if num_samples_per_prompt <= 1:
             return rewards - rewards.mean()
         n = rewards.numel()

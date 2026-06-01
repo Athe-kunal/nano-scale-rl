@@ -20,6 +20,7 @@ from typing import Any
 import torch
 import torch.distributed as dist
 import torch.nn as nn
+import wandb
 from loguru import logger
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -30,6 +31,7 @@ from scale_rl.inference.rollout import (
     prepare_batch,
     remote_vllm_init_weight_transfer,
     sync_weights_to_vllm_inplace,
+    trainer_init_nccl_group,
     wait_for_rollout_worker,
 )
 from scale_rl.replay_buffer import ReplayBuffer
@@ -66,7 +68,6 @@ class Trainer:
         self,
         cfg: TrainerConfig,
         device_mesh: Any,
-        model_update_group: Any,
     ) -> None:
         self.cfg = cfg
         self.device = torch.device("cuda", int(os.environ.get("LOCAL_RANK", 0)))
@@ -80,11 +81,12 @@ class Trainer:
             cfg.model_path,
             torch_dtype=getattr(torch, cfg.dtype),
         )
-        self.model: FSDP = prepare_dp_model(
+        self.model: nn.Module = prepare_dp_model(
             base_model,
             dtype=cfg.dtype,
             sync_module_states=cfg.sync_module_states,
             device_mesh=device_mesh,
+            sharding_strategy=cfg.fsdp_sharding_strategy,
         )
 
         self.optimizer = torch.optim.AdamW(
@@ -93,7 +95,11 @@ class Trainer:
             weight_decay=cfg.weight_decay,
         )
 
-        self.model_update_group = model_update_group
+        # Initialized in train() after rendezvous with the vLLM worker.
+        self.model_update_group: Any = None
+        # False when FSDP uses NO_SHARD (world_size=1) — parameters keep their
+        # original names and don't need full_tensor() gathering.
+        self._use_fsdp_gather: bool = False
 
         self.buffer = ReplayBuffer(
             prompts_per_batch=cfg.prompts_per_batch,
@@ -202,7 +208,7 @@ class Trainer:
             self.model,
             self.model_update_group,
             packed=cfg.weight_transfer_packed,
-            fsdp=True,
+            fsdp=self._use_fsdp_gather,
         )
         if synced and self.rank == 0:
             logger.info(
@@ -238,23 +244,79 @@ class Trainer:
         if self.rank == 0:
             wait_for_rollout_worker(cfg.rollout_worker_url)
 
+        # ---- wandb (rank 0 only) ----
+        if self.rank == 0 and cfg.wandb_enabled:
+            wandb.init(
+                project=cfg.wandb_project,
+                name=cfg.wandb_run_name or None,
+                config={
+                    "algorithm": cfg.algorithm,
+                    "model_path": cfg.model_path,
+                    "lr": cfg.lr,
+                    "clip_eps": cfg.clip_eps,
+                    "clip_low": cfg.clip_low,
+                    "clip_high": cfg.clip_high,
+                    "kl_coef": cfg.kl_coef,
+                    "tis_C": cfg.tis_C,
+                    "prompts_per_batch": cfg.prompts_per_batch,
+                    "rollouts_per_step": cfg.rollouts_per_step,
+                    "stale_steps": cfg.stale_steps,
+                    "max_seq_len": cfg.max_seq_len,
+                    "max_new_tokens": cfg.max_new_tokens,
+                    "temperature": cfg.temperature,
+                    "high_pass_rate_threshold": cfg.high_pass_rate_threshold,
+                    "total_steps": cfg.total_steps,
+                },
+            )
+            logger.info(
+                "Wandb run initialised: project={proj} run={run}",
+                proj=cfg.wandb_project,
+                run=wandb.run.name,
+            )
+
+        # Tell the vLLM worker to open its end of the NCCL rendezvous (async on
+        # the worker side), then immediately open the trainer end.  Both sides
+        # rendezvous on master_address:master_port; trainer is rank 0, vLLM is
+        # rank <rank_offset>.  The result is a PyNcclCommunicator whose
+        # .broadcast() accepts the src= / stream= kwargs that vLLM expects.
+        trainer_world_size = dist.get_world_size()
+        nccl_world_size = trainer_world_size + 1  # +1 for the vLLM worker
+
+        # NO_SHARD keeps original parameter names; all sharding strategies that
+        # actually shard parameters need full_tensor() gathering before transfer.
+        use_fsdp_gather = cfg.fsdp_sharding_strategy != "no_shard"
+        self._use_fsdp_gather = use_fsdp_gather
+
+        # ---- Initial weight sync: trainer → vLLM ----
+        # Only rank 0 drives HTTP and NCCL; other ranks wait at the barrier.
+        # This guarantees vLLM serves the trainer's weights on the very first
+        # rollout request — not whatever the vLLM worker loaded from disk.
         if self.rank == 0:
             remote_vllm_init_weight_transfer(
                 cfg.rollout_worker_url,
                 master_address=cfg.master_address,
-                master_port=cfg.master_port,
-                rank_offset=dist.get_world_size(),
-                world_size=dist.get_world_size() + 1,
+                master_port=cfg.weight_transfer_port,
+                rank_offset=trainer_world_size,
+                world_size=nccl_world_size,
             )
+            self.model_update_group = trainer_init_nccl_group(
+                master_address=cfg.master_address,
+                master_port=cfg.weight_transfer_port,
+                world_size=nccl_world_size,
+            )
+            logger.info("Performing initial weight sync: trainer → vLLM ...")
+            sync_weights_to_vllm_inplace(
+                self.model,
+                cfg.rollout_worker_url,
+                self.model_update_group,
+                packed=cfg.weight_transfer_packed,
+                fsdp=use_fsdp_gather,
+            )
+            logger.info("Initial weight sync complete. vLLM is now in sync with the trainer.")
 
-        # Push initial weights into vLLM before any rollout is collected.
-        sync_weights_to_vllm_inplace(
-            self.model,
-            cfg.rollout_worker_url,
-            self.model_update_group,
-            packed=cfg.weight_transfer_packed,
-            fsdp=True,
-        )
+        # All ranks wait here so no rollout is requested until rank 0 has
+        # finished pushing weights into the vLLM worker.
+        dist.barrier()
 
         global_step = 0
         prompt_idx = 0
@@ -321,6 +383,14 @@ class Trainer:
                     filtered=newly_filtered,
                     total=len(envs),
                 )
+                if cfg.wandb_enabled:
+                    wandb.log(
+                        {
+                            "data/high_pass_rate_filtered": newly_filtered,
+                            "data/active_prompts": len(envs) - newly_filtered,
+                        },
+                        step=global_step,
+                    )
 
                 self.buffer.add(rollouts, rewards)
 
@@ -333,14 +403,30 @@ class Trainer:
                 metrics = self.step(batch)
                 global_step += 1
 
-                if self.rank == 0 and global_step % cfg.log_every == 0:
-                    logger.info(
-                        "step=%d  loss=%.4f  clip_frac=%.3f  mean_reward=%.4f",
-                        global_step,
-                        metrics["loss"],
-                        metrics["clip_frac"],
-                        metrics["mean_reward"],
-                    )
+                if self.rank == 0:
+                    if cfg.wandb_enabled:
+                        wandb.log(
+                            {
+                                "train/loss": metrics["loss"],
+                                "train/clip_frac": metrics["clip_frac"],
+                                "train/mean_reward": metrics["mean_reward"],
+                                "train/trainer_steps": self.buffer.trainer_steps,
+                            },
+                            step=global_step,
+                        )
+
+                    if global_step % cfg.log_every == 0:
+                        logger.info(
+                            "step={step}  loss={loss:.4f}  clip_frac={cf:.3f}  mean_reward={mr:.4f}",
+                            step=global_step,
+                            loss=metrics["loss"],
+                            cf=metrics["clip_frac"],
+                            mr=metrics["mean_reward"],
+                        )
 
                 if global_step >= cfg.total_steps:
                     break
+
+        if self.rank == 0 and cfg.wandb_enabled:
+            wandb.finish()
+            logger.info("Wandb run finished.")

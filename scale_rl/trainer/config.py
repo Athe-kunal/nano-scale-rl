@@ -37,14 +37,28 @@ class TrainerConfig:
     top_k: int = -1
 
     # FSDP
+    # Sharding strategy: no_shard | full_shard | shard_grad_op | hybrid_shard | hybrid_shard_zero2
+    #   no_shard          – no sharding (single GPU or DDP-equivalent); parameters keep original names,
+    #                       compatible with vLLM weight transfer
+    #   full_shard        – shard params + grads + optimizer states across all ranks (ZeRO-3)
+    #   shard_grad_op     – shard grads + optimizer states only, replicate params (ZeRO-2)
+    #   hybrid_shard      – full_shard within node, replicate across nodes; requires 2D device mesh
+    #   hybrid_shard_zero2– shard_grad_op within node, replicate across nodes; requires 2D device mesh
+    fsdp_sharding_strategy: str = "no_shard"
     sync_module_states: bool = True
 
     # NCCL weight transfer
     master_address: str = "127.0.0.1"
-    master_port: int = 29600
-    weight_transfer_packed: bool = True
+    master_port: int = 29600          # torchrun rendezvous port
+    weight_transfer_port: int = 29601 # separate port for vLLM StatelessProcessGroup rendezvous
+    weight_transfer_packed: bool = False  # packed=True incompatible with torch 2.10 ProcessGroup.broadcast
 
     # Training loop
     total_steps: int = 1000
     log_every: int = 10
     high_pass_rate_threshold: float = 0.9
+
+    # Wandb
+    wandb_project: str = "ScaleRL"
+    wandb_run_name: str = ""   # empty = wandb auto-names the run
+    wandb_enabled: bool = True

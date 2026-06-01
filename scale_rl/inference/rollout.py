@@ -287,3 +287,35 @@ def remote_vllm_init_weight_transfer(
         raise RuntimeError(f"rollout worker weight-transfer init failed: {resp}")
     return resp
 
+
+def trainer_init_nccl_group(
+    *,
+    master_address: str,
+    master_port: int,
+    world_size: int,
+):
+    """Create the trainer-side PyNcclCommunicator for weight transfer.
+
+    Must be called AFTER ``remote_vllm_init_weight_transfer`` (which tells the
+    vLLM worker to start its own rendezvous thread).  Both sides rendezvous on
+    the same ``master_address:master_port``; the trainer is always rank 0.
+
+    Returns a ``PyNcclCommunicator`` that must be passed as ``model_update_group``
+    to ``sync_weights_to_vllm_inplace``.
+    """
+    from vllm.distributed.weight_transfer.nccl_engine import NCCLWeightTransferEngine
+
+    logger.info(
+        "Trainer initializing NCCL weight-transfer group with "
+        f"{master_address=}, {master_port=}, {world_size=}."
+    )
+    group = NCCLWeightTransferEngine.trainer_init(
+        dict(
+            master_address=master_address,
+            master_port=master_port,
+            world_size=world_size,
+        )
+    )
+    logger.info("Trainer NCCL weight-transfer group ready.")
+    return group
+
