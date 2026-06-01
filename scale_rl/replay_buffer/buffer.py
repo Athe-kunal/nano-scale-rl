@@ -121,10 +121,7 @@ class ReplayBuffer:
                 )
             )
         logger.debug(
-            "Replay buffer: added %d records, total %d / capacity %d.",
-            len(rollouts),
-            len(self._store),
-            self._store.maxlen,
+            f"Replay buffer: added {len(rollouts)} records, total {len(self._store)} / capacity {self._store.maxlen}."
         )
 
     def is_ready(self) -> bool:
@@ -159,9 +156,7 @@ class ReplayBuffer:
         ]
         rewards = [r.reward for r in records]
         logger.debug(
-            "Replay buffer: sampled %d records, %d remaining.",
-            self._batch_size,
-            len(self._store),
+            f"Replay buffer: sampled {self._batch_size} records, {len(self._store)} remaining."
         )
         return {"rollouts": rollouts, "rewards": rewards}
 

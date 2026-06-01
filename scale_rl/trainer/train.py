@@ -89,6 +89,11 @@ class Trainer:
             sharding_strategy=cfg.fsdp_sharding_strategy,
         )
 
+        if cfg.gradient_checkpointing:
+            self.model.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": False}
+            )
+
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
             lr=cfg.lr,
@@ -150,46 +155,59 @@ class Trainer:
             self.device,
         )
 
+        # Split into micro-batches for gradient accumulation to save memory.
+        B = tensors["input_ids"].shape[0]
+        accum_steps = cfg.gradient_accumulation_steps
+        micro_size = max(1, B // accum_steps)
+
         self.optimizer.zero_grad()
+        total_loss = 0.0
+        micro_clip_frac = 0.0
 
-        # Current policy log-probs [B, T-1] and aligned response mask.
-        logprobs, response_mask = get_logprobs(
-            self.model,
-            tensors["input_ids"],
-            tensors["attention_mask"],
-            tensors["response_mask"],
-        )
+        for micro_start in range(0, B, micro_size):
+            micro_end = min(micro_start + micro_size, B)
+            micro_tensors = {k: v[micro_start:micro_end] for k, v in tensors.items()}
+            micro_adv = advantages[micro_start:micro_end]
 
-        loss = self._loss_fn(
-            logprobs=logprobs,
-            old_logprobs=tensors["inference_logprobs"],
-            advantages=advantages,
-            response_mask=response_mask,
-            # algorithm-specific kwargs (unused ones are swallowed by **kwargs)
-            clip=cfg.clip_eps,
-            clip_low=cfg.clip_low,
-            clip_high=cfg.clip_high,
-            kl_coeff=cfg.kl_coef,
-            inference_logprobs=tensors["inference_logprobs"],
-            C=cfg.tis_C,
-        )
+            logprobs, response_mask = get_logprobs(
+                self.model,
+                micro_tensors["input_ids"],
+                micro_tensors["attention_mask"],
+                micro_tensors["response_mask"],
+            )
 
-        loss.backward()
+            loss = self._loss_fn(
+                logprobs=logprobs,
+                old_logprobs=micro_tensors["inference_logprobs"],
+                advantages=micro_adv,
+                response_mask=response_mask,
+                clip=cfg.clip_eps,
+                clip_low=cfg.clip_low,
+                clip_high=cfg.clip_high,
+                kl_coeff=cfg.kl_coef,
+                inference_logprobs=micro_tensors["inference_logprobs"],
+                C=cfg.tis_C,
+            )
+
+            scaled_loss = loss / accum_steps
+            scaled_loss.backward()
+            total_loss += loss.detach().item()
+
+            with torch.no_grad():
+                ratio = (logprobs - micro_tensors["inference_logprobs"]).exp()
+                mask = response_mask.float()
+                n_tok = mask.sum().clamp(min=1)
+                micro_clip_frac = (
+                    ((ratio < 1 - cfg.clip_eps) | (ratio > 1 + cfg.clip_eps))
+                    .float().mul(mask).sum() / n_tok
+                ).item()
+
         nn.utils.clip_grad_norm_(self.model.parameters(), cfg.max_grad_norm)
         self.optimizer.step()
 
-        with torch.no_grad():
-            ratio = (logprobs - tensors["inference_logprobs"]).exp()
-            mask = response_mask.float()
-            n_tok = mask.sum().clamp(min=1)
-            clip_frac = (
-                ((ratio < 1 - cfg.clip_eps) | (ratio > 1 + cfg.clip_eps))
-                .float().mul(mask).sum() / n_tok
-            ).item()
-
         metrics = {
-            "loss": loss.item(),
-            "clip_frac": clip_frac,
+            "loss": total_loss / accum_steps,
+            "clip_frac": micro_clip_frac,
             "mean_reward": rewards.mean().item(),
         }
 

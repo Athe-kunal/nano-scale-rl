@@ -142,6 +142,7 @@ echo "    rollout worker is healthy."
 # ---------------------------------------------------------------------------
 echo "[3/3] Launching FSDP trainer on GPUs [$TRAINER_GPU_IDS] ..."
 
+PYTORCH_ALLOC_CONF=expandable_segments:True \
 CUDA_VISIBLE_DEVICES="$TRAINER_GPU_IDS" \
 uv run torchrun \
     --nproc-per-node="$NUM_TRAINER_GPUS" \

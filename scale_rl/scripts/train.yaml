@@ -20,6 +20,8 @@ dataset_split: "train"
 lr: 1.0e-6
 weight_decay: 0.01
 max_grad_norm: 1.0
+gradient_checkpointing: true
+gradient_accumulation_steps: 4   # splits each batch into micro-batches; reduces peak activation memory
 
 # ---------------------------------------------------------------------------
 # RL algorithm
@@ -87,7 +89,7 @@ high_pass_rate_threshold: 0.9
 # ---------------------------------------------------------------------------
 wandb_project: "ScaleRL"
 wandb_run_name: ""     # empty = wandb auto-names the run
-wandb_enabled: true
+wandb_enabled: false
 
 # ---------------------------------------------------------------------------
 # Infrastructure

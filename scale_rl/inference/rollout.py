@@ -31,16 +31,30 @@ def get_logprobs(model, input_ids, attention_mask, response_mask):
     sample-level masked-mean form makes the clip bounds essentially non-
     functional (the geometric mean of many per-token ratios is always ≈ 1).
     """
-    with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-        logits = model(input_ids=input_ids, attention_mask=attention_mask).logits
-    # Shift: logits[t] predicts token[t+1]
-    shift_logits = logits[:, :-1, :]
-    shift_labels = input_ids[:, 1:]
-    shift_mask = response_mask[:, 1:]
-    # log_softmax(x)[k] = x[k] - logsumexp(x). logsumexp saves only [B,T] for
-    # backward vs log_softmax's [B,T,V] — avoids a ~V× persistent allocation.
-    gathered = shift_logits.gather(-1, shift_labels.unsqueeze(-1)).squeeze(-1)
-    token_logprobs = gathered - torch.logsumexp(shift_logits, dim=-1)
+    B, T = input_ids.shape
+    shift_labels = input_ids[:, 1:]          # [B, T-1]
+    shift_mask   = response_mask[:, 1:]      # [B, T-1]
+    token_logprobs = torch.zeros(B, T - 1, device=input_ids.device, dtype=torch.float32)
+
+    # Chunk along the batch dimension to cap peak logit memory at
+    # [chunk_size, T, V] instead of [B, T, V].
+    chunk_size = 1024
+    for start in range(0, B, chunk_size):
+        end = min(start + chunk_size, B)
+        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+            logits_chunk = model(
+                input_ids=input_ids[start:end],
+                attention_mask=attention_mask[start:end],
+            ).logits                                            # [chunk, T, V]
+        shift_logits = logits_chunk[:, :-1, :]                 # [chunk, T-1, V]
+        gathered = shift_logits.gather(
+            -1, shift_labels[start:end].unsqueeze(-1)
+        ).squeeze(-1)                                           # [chunk, T-1]
+        token_logprobs[start:end] = (
+            gathered - torch.logsumexp(shift_logits, dim=-1)
+        ).float()
+        del logits_chunk, shift_logits, gathered
+
     return token_logprobs, shift_mask
 
 

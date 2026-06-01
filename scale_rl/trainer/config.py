@@ -13,6 +13,8 @@ class TrainerConfig:
     lr: float = 1e-6
     weight_decay: float = 0.01
     max_grad_norm: float = 1.0
+    gradient_checkpointing: bool = True
+    gradient_accumulation_steps: int = 1
 
     # RL algorithm + loss kwargs
     algorithm: str = "dapo"       # grpo | dapo | reinforce | gspo | cispo | maxrl
