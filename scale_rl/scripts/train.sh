@@ -77,7 +77,7 @@ echo "============================================================"
 # ---------------------------------------------------------------------------
 echo "[1/3] Starting vLLM rollout worker on GPU $VLLM_GPU_IDS ..."
 
-CUDA_VISIBLE_DEVICES="$VLLM_GPU_IDS" setsid uv run python3 -m scale_rl.inference.rollout_worker \
+VLLM_SERVER_DEV_MODE=1 CUDA_VISIBLE_DEVICES="$VLLM_GPU_IDS" setsid uv run python3 -m scale_rl.inference.rollout_worker \
     --model        "$MODEL_PATH" \
     --host         "$WORKER_HOST" \
     --port         "$WORKER_PORT" \
