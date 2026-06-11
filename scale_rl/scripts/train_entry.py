@@ -15,7 +15,7 @@ import torch.distributed as dist
 from omegaconf import OmegaConf
 from loguru import logger
 
-from scale_rl.trainer.common import compute_init, compute_cleanup
+from scale_rl.trainer.setup_utils import compute_init, compute_cleanup
 from scale_rl.trainer.config import TrainerConfig
 from scale_rl.trainer.train import Trainer
 from scale_rl.envs.dapo_env import DapoMathEnv
@@ -38,9 +38,9 @@ def main() -> None:
     cfg = build_config(args.config)
 
     raw_yaml: dict = OmegaConf.to_container(OmegaConf.load(args.config), resolve=True)  # type: ignore[assignment]
-    dataset_id     = raw_yaml.get("dataset_id",     "open-r1/DAPO-Math-17k-Processed")
+    dataset_id = raw_yaml.get("dataset_id", "open-r1/DAPO-Math-17k-Processed")
     dataset_config = raw_yaml.get("dataset_config", "all")
-    dataset_split  = raw_yaml.get("dataset_split",  "train")
+    dataset_split = raw_yaml.get("dataset_split", "train")
 
     # ---- device mesh for FSDP ----
     # Single-node: 1D mesh over all trainer GPUs → FULL_SHARD.
@@ -52,7 +52,9 @@ def main() -> None:
     if rank == 0:
         logger.info(
             "Loading dataset %s/%s (split=%s) ...",
-            dataset_id, dataset_config, dataset_split,
+            dataset_id,
+            dataset_config,
+            dataset_split,
         )
     records = DapoMathEnv.load(
         dataset_id=dataset_id,
@@ -60,7 +62,7 @@ def main() -> None:
         split=dataset_split,
     )
     prompts = [env.prompt for env in records]
-    envs    = records
+    envs = records
     if rank == 0:
         logger.info("Dataset loaded: %d examples.", len(records))
 

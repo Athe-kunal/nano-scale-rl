@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import json
+
 from typing import Any
 
 import wandb
 from datasets import load_dataset
 
-from scale_rl.trainer.common import print0
+from scale_rl.trainer.setup_utils import print0
 from scale_rl.envs.dapo_env import extract_last_boxed
-from scale_rl.inference.rollout import generate_rollouts_remote
+from scale_rl.inference.rollout_worker import vLLMRollout
 from scale_rl.eval.utils import pass_at_k
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -35,21 +37,8 @@ def check_answer(pred: str | None, answer: int | float | str) -> bool:
         return False
 
 
-def build_prompt(problem: str, tokenizer) -> str:
-    messages = [
-        {"role": "system", "content": DEFAULT_SYSTEM_PROMPT},
-        {"role": "user", "content": problem},
-    ]
-    if hasattr(tokenizer, "apply_chat_template"):
-        return tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-    return f"{DEFAULT_SYSTEM_PROMPT}\n\n{problem}"
-
-
 def run_eval(
-    rollout_worker_url: str,
-    tokenizer,
+    rollout_worker: vLLMRollout,
     eval_k: int,
     eval_max_tokens: int,
     step: int,
@@ -58,17 +47,18 @@ def run_eval(
 ) -> dict[str, Any]:
     """Evaluate on AIME 2025 using the already weight-synced rollout worker."""
     problems: list[dict] = list(load_dataset("MathArena/aime_2025", split="train"))
-    prompts = [build_prompt(p["problem"], tokenizer) for p in problems]
+    prompts = [p["problem"] for p in problems]
 
-    rollouts = generate_rollouts_remote(
-        rollout_worker_url, prompts, eval_k, eval_max_tokens, temperature, top_k
+    sampling_params = {"max_tokens": eval_max_tokens, "temperature": temperature, "top_k": top_k, "logprobs": 1}
+    rollouts = asyncio.run(
+        rollout_worker.generate_batch(prompts, eval_k, sampling_params, system_prompt=DEFAULT_SYSTEM_PROMPT)
     )
 
     # rollouts is flat: eval_k responses per problem in order
     per_problem = []
     for i, prob in enumerate(problems):
         batch = rollouts[i * eval_k : (i + 1) * eval_k]
-        preds = [extract_last_boxed(r["response"]) for r in batch]
+        preds = [extract_last_boxed(r.response) for r in batch]
         n_correct = sum(check_answer(p, prob["answer"]) for p in preds)
         per_problem.append(
             {
@@ -85,7 +75,9 @@ def run_eval(
 
     print0(f"[eval step={step}] {json.dumps(metrics)}")
     for r in per_problem:
-        print0(f"  problem {r['problem_idx']:02d}: {r['n_correct']}/{eval_k}  pass@{eval_k}={r['pass_at_k']:.3f}")
+        print0(
+            f"  problem {r['problem_idx']:02d}: {r['n_correct']}/{eval_k}  pass@{eval_k}={r['pass_at_k']:.3f}"
+        )
 
     if wandb.run is not None:
         wandb.log(metrics, step=step)

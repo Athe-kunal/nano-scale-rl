@@ -13,6 +13,7 @@ steps behind the policy.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -25,18 +26,15 @@ from loguru import logger
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from scale_rl.inference.rollout import (
-    generate_rollouts_remote,
-    get_logprobs,
-    prepare_batch,
-    remote_vllm_init_weight_transfer,
-    sync_weights_to_vllm_inplace,
-    trainer_init_nccl_group,
+from scale_rl.algos.loss import ALGORITHMS, compute_advantages
+from scale_rl.algos.utils import get_logprobs, prepare_batch
+from scale_rl.inference.rollout_worker import (
+    initialize_trainer,
+    vLLMRollout,
     wait_for_rollout_worker,
 )
 from scale_rl.replay_buffer import ReplayBuffer
 from scale_rl.trainer.dp_utils import prepare_dp_model
-from scale_rl.trainer.loss import ALGORITHMS, compute_advantages
 from scale_rl.trainer.config import TrainerConfig
 
 
@@ -100,6 +98,8 @@ class Trainer:
             weight_decay=cfg.weight_decay,
         )
 
+        self.rollout_worker = vLLMRollout(cfg.rollout_worker_url, self.tokenizer)
+
         # Initialized in train() after rendezvous with the vLLM worker.
         self.model_update_group: Any = None
         # False when FSDP uses NO_SHARD (world_size=1) — parameters keep their
@@ -110,7 +110,7 @@ class Trainer:
             prompts_per_batch=cfg.prompts_per_batch,
             rollouts_per_step=cfg.rollouts_per_step,
             stale_steps=cfg.stale_steps,
-            rollout_worker_url=cfg.rollout_worker_url,
+            rollout_worker=self.rollout_worker,
         )
 
         if cfg.algorithm not in ALGORITHMS:
@@ -310,26 +310,24 @@ class Trainer:
         # This guarantees vLLM serves the trainer's weights on the very first
         # rollout request — not whatever the vLLM worker loaded from disk.
         if self.rank == 0:
-            remote_vllm_init_weight_transfer(
-                cfg.rollout_worker_url,
+            asyncio.run(self.rollout_worker.initialize_weight_transfer(
                 master_address=cfg.master_address,
                 master_port=cfg.weight_transfer_port,
                 rank_offset=trainer_world_size,
                 world_size=nccl_world_size,
-            )
-            self.model_update_group = trainer_init_nccl_group(
+            ))
+            _, self.model_update_group = initialize_trainer(
                 master_address=cfg.master_address,
                 master_port=cfg.weight_transfer_port,
                 world_size=nccl_world_size,
             )
             logger.info("Performing initial weight sync: trainer → vLLM ...")
-            sync_weights_to_vllm_inplace(
+            asyncio.run(self.rollout_worker.update_weights(
                 self.model,
-                cfg.rollout_worker_url,
                 self.model_update_group,
                 packed=cfg.weight_transfer_packed,
                 fsdp=use_fsdp_gather,
-            )
+            ))
             logger.info("Initial weight sync complete. vLLM is now in sync with the trainer.")
 
         # All ranks wait here so no rollout is requested until rank 0 has
@@ -365,20 +363,23 @@ class Trainer:
             prompt_idx   += cfg.prompts_per_batch
 
             if self.rank == 0:
-                rollouts = generate_rollouts_remote(
-                    cfg.rollout_worker_url,
+                sampling_params = {
+                    "max_tokens": cfg.max_new_tokens,
+                    "temperature": cfg.temperature,
+                    "top_k": cfg.top_k,
+                    "logprobs": 1,
+                }
+                rollouts = asyncio.run(self.rollout_worker.generate_batch(
                     batch_prompts,
                     num_samples=cfg.rollouts_per_step,
-                    max_new_tokens=cfg.max_new_tokens,
-                    temperature=cfg.temperature,
-                    top_k=cfg.top_k,
-                )
+                    sampling_params=sampling_params,
+                ))
                 # Rollouts are ordered: [prompt_0 × G, prompt_1 × G, ...]
                 rewards: list[float] = []
                 for i, env in enumerate(batch_envs):
                     group_rewards: list[float] = []
                     for g in range(cfg.rollouts_per_step):
-                        r = rollouts[i * cfg.rollouts_per_step + g]["response"]
+                        r = rollouts[i * cfg.rollouts_per_step + g].response
                         reward, _ = env.compute_reward(r)
                         rewards.append(reward)
                         group_rewards.append(reward)

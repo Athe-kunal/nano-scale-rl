@@ -1,5 +1,11 @@
 from dataclasses import dataclass
+from typing import Any
 
+@dataclass
+class ResponseRecord:
+    response_ids: list[int]
+    inference_logprobs: list[list[float]]
+    reward: list[float]
 
 @dataclass
 class RolloutRecord:
@@ -7,6 +13,5 @@ class RolloutRecord:
     prompt: str
     response: str
     prompt_ids: list[int]
-    response_ids: list[int]
-    inference_logprobs: list[float]
-    reward: float
+    response_record: ResponseRecord
+    metadata: dict[str, Any]

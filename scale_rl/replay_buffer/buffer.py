@@ -14,7 +14,7 @@ Terminology
 Typical call sequence
 ---------------------
   buf = ReplayBuffer(prompts_per_batch=16, rollouts_per_step=8,
-                     stale_steps=4, rollout_worker_url="http://127.0.0.1:8047")
+                     stale_steps=4, rollout_worker=worker)
   buf.add(rollouts, rewards)    # called after each vLLM generation round
   while buf.is_ready():
       batch = buf.sample()      # returns one batch and drains it from the buffer
@@ -27,7 +27,10 @@ from __future__ import annotations
 from collections import deque
 from typing import Any
 
+import asyncio
+
 from scale_rl.inference.models import RolloutRecord
+from scale_rl.inference.rollout_worker import vLLMRollout
 
 from loguru import logger
 
@@ -46,9 +49,9 @@ class ReplayBuffer:
     stale_steps:
         Sync trainer → vLLM weights every this many trainer update steps.
         Set to 1 for on-policy (sync after every update).
-    rollout_worker_url:
-        HTTP base URL of the running rollout worker, e.g.
-        ``"http://127.0.0.1:8047"``.  Required when ``stale_steps > 0``.
+    rollout_worker:
+        A ``vLLMRollout`` instance connected to the running vLLM server.
+        Required when ``stale_steps > 0``.
     max_size:
         Maximum number of ``RolloutRecord`` objects kept in the buffer.
         Oldest items are evicted when the cap is exceeded.  Defaults to
@@ -60,7 +63,7 @@ class ReplayBuffer:
         prompts_per_batch: int,
         rollouts_per_step: int,
         stale_steps: int,
-        rollout_worker_url: str,
+        rollout_worker: vLLMRollout,
         max_size: int | None = None,
     ) -> None:
         if prompts_per_batch <= 0:
@@ -73,7 +76,7 @@ class ReplayBuffer:
         self.prompts_per_batch = prompts_per_batch
         self.rollouts_per_step = rollouts_per_step
         self.stale_steps = stale_steps
-        self.rollout_worker_url = rollout_worker_url
+        self.rollout_worker = rollout_worker
 
         self._batch_size: int = prompts_per_batch * rollouts_per_step
         _max = max_size if max_size is not None else 4 * self._batch_size
@@ -93,7 +96,7 @@ class ReplayBuffer:
     def __len__(self) -> int:
         return len(self._store)
 
-    def add(self, rollouts: list[dict[str, Any]], rewards: list[float]) -> None:
+    def add(self, rollouts: list[RolloutRecord], rewards: list[float]) -> None:
         """
         Ingest a batch of rollouts produced by the vLLM worker together with
         their scalar rewards.
@@ -110,16 +113,9 @@ class ReplayBuffer:
                 "must have the same length"
             )
         for rollout, reward in zip(rollouts, rewards):
-            self._store.append(
-                RolloutRecord(
-                    prompt=rollout["prompt"],
-                    response=rollout["response"],
-                    prompt_ids=rollout["prompt_ids"],
-                    response_ids=rollout["response_ids"],
-                    inference_logprobs=rollout["inference_logprobs"],
-                    reward=reward,
-                )
-            )
+            response_record = rollout.response_record
+            response_record.reward = [reward]
+            self._store.append(rollout)
         logger.debug(
             f"Replay buffer: added {len(rollouts)} records, total {len(self._store)} / capacity {self._store.maxlen}."
         )
@@ -149,12 +145,13 @@ class ReplayBuffer:
                 "prompt": r.prompt,
                 "response": r.response,
                 "prompt_ids": r.prompt_ids,
-                "response_ids": r.response_ids,
-                "inference_logprobs": r.inference_logprobs,
+                "response_ids": r.response_record.response_ids,
+                "inference_logprobs": r.response_record.inference_logprobs,
+                "metadata": r.metadata,
             }
             for r in records
         ]
-        rewards = [r.reward for r in records]
+        rewards = [r.response_record.reward for r in records]
         logger.debug(
             f"Replay buffer: sampled {self._batch_size} records, {len(self._store)} remaining."
         )
@@ -224,18 +221,14 @@ class ReplayBuffer:
         packed: bool,
         fsdp: bool,
     ) -> None:
-        from scale_rl.inference.rollout import sync_weights_to_vllm_inplace
-
         logger.info(
             "Syncing trainer weights to vLLM worker at step %d (every %d steps).",
             self._trainer_steps,
             self.stale_steps,
         )
-        sync_weights_to_vllm_inplace(
-            train_model,
-            self.rollout_worker_url,
-            model_update_group,
-            packed=packed,
-            fsdp=fsdp,
+        asyncio.run(
+            self.rollout_worker.update_weights(
+                train_model, model_update_group, packed=packed, fsdp=fsdp
+            )
         )
         logger.info("Weight sync to vLLM complete.")
