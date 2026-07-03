@@ -95,12 +95,12 @@ wandb_enabled: false
 # Infrastructure
 # ---------------------------------------------------------------------------
 # GPU IDs for the FSDP trainer (torchrun --nproc-per-node = length of this list).
-trainer_gpu_ids: [2]
+trainer_gpu_ids: [0]
 
 # GPU IDs reserved for the vLLM rollout worker (tensor_parallel_size = length of this list).
-vllm_gpu_ids: [3]
+vllm_gpu_ids: [1]
 
 # vLLM engine settings (passed to rollout_worker.py)
-vllm_gpu_memory_utilization: 0.6
+vllm_gpu_memory_utilization: 0.97
 vllm_weight_transfer_backend: "nccl"
 vllm_clear_kv_cache: false

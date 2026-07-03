@@ -10,16 +10,24 @@ def prepare_batch(
     max_seq_len: int,
     device: torch.device,
 ) -> dict[str, torch.Tensor]:
-    input_ids_list, response_mask_list, prompt_lens, response_lens = [], [], [], []
+    input_ids_list, prompt_attn_list, response_mask_list = [], [], []
+    prompt_lens, response_lens = [], []
     for rollout in rollouts:
         prompt_ids = rollout["prompt_ids"]
+        prompt_attention_mask = rollout["prompt_attention_mask"]
         response_ids = rollout["response_ids"]
         full_ids = prompt_ids + response_ids
+        # Response tokens are freshly generated (no internal padding), so
+        # their attention mask is always 1; the prompt's mask comes from the
+        # tokenizer, which may contain 0s.
+        full_attn = prompt_attention_mask + [1] * len(response_ids)
         if len(full_ids) > max_seq_len:
             full_ids = full_ids[:max_seq_len]
+            full_attn = full_attn[:max_seq_len]
             response_ids = full_ids[len(prompt_ids):]
         mask = [0] * len(prompt_ids) + [1] * len(response_ids)
         input_ids_list.append(full_ids)
+        prompt_attn_list.append(full_attn)
         response_mask_list.append(mask)
         prompt_lens.append(len(prompt_ids))
         response_lens.append(len(response_ids))
@@ -28,7 +36,7 @@ def prepare_batch(
     pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
     padded_ids = [ids + [pad_id] * (max_len - len(ids)) for ids in input_ids_list]
     padded_masks = [m + [0] * (max_len - len(m)) for m in response_mask_list]
-    attn_masks = [[1] * len(ids) + [0] * (max_len - len(ids)) for ids in input_ids_list]
+    attn_masks = [a + [0] * (max_len - len(a)) for a in prompt_attn_list]
 
     inf_lp_list = []
     for rollout, P, R in zip(rollouts, prompt_lens, response_lens):

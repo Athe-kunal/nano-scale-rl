@@ -13,5 +13,6 @@ class RolloutRecord:
     prompt: str
     response: str
     prompt_ids: list[int]
+    prompt_attention_mask: list[int]
     response_record: ResponseRecord
     metadata: dict[str, Any]

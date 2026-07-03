@@ -23,7 +23,7 @@ import sys, re
 scalar_keys = [
     "model_path", "dtype", "rollout_worker_url",
     "vllm_gpu_memory_utilization",
-    "vllm_weight_transfer_backend", "vllm_clear_kv_cache", "master_port",
+    "vllm_weight_transfer_backend", "master_port",
 ]
 want = set(scalar_keys) | {"trainer_gpu_ids", "vllm_gpu_ids"}
 found = {}
@@ -77,15 +77,13 @@ echo "============================================================"
 # ---------------------------------------------------------------------------
 echo "[1/3] Starting vLLM rollout worker on GPU $VLLM_GPU_IDS ..."
 
-VLLM_SERVER_DEV_MODE=1 CUDA_VISIBLE_DEVICES="$VLLM_GPU_IDS" setsid uv run python3 -m scale_rl.inference.rollout_worker \
-    --model        "$MODEL_PATH" \
+VLLM_SERVER_DEV_MODE=1 CUDA_VISIBLE_DEVICES="$VLLM_GPU_IDS" setsid uv run vllm serve "$MODEL_PATH" \
     --host         "$WORKER_HOST" \
     --port         "$WORKER_PORT" \
     --dtype        "$DTYPE" \
     --gpu-memory-utilization "$VLLM_GPU_MEMORY_UTILIZATION" \
     --tensor-parallel-size   "$VLLM_TENSOR_PARALLEL_SIZE" \
-    --weight-transfer-backend "$VLLM_WEIGHT_TRANSFER_BACKEND" \
-    --clear-kv-cache "$VLLM_CLEAR_KV_CACHE" \
+    --weight-transfer-config "{\"backend\": \"$VLLM_WEIGHT_TRANSFER_BACKEND\"}" \
     >"$VLLM_LOG" 2>&1 &
 
 VLLM_PID=$!

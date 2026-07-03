@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import logging
 from typing import Any, Mapping
 
 from datasets import load_dataset
+from loguru import logger
 from skyrl_gym.envs.base_text_env import ConversationType
 
 from scale_rl.envs.base import ScaleRLBase
-
-logger = logging.getLogger(__name__)
 
 DEFAULT_SYSTEM_PROMPT = (
     "Please reason step by step, and put your final answer in \\boxed{}."

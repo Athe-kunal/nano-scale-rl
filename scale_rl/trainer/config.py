@@ -54,6 +54,7 @@ class TrainerConfig:
     master_port: int = 29600          # torchrun rendezvous port
     weight_transfer_port: int = 29601 # separate port for vLLM StatelessProcessGroup rendezvous
     weight_transfer_packed: bool = False  # packed=True incompatible with torch 2.10 ProcessGroup.broadcast
+    vllm_clear_kv_cache: bool = False     # True: abort in-flight rollouts + clear KV cache on sync (correct, wasteful)
 
     # Training loop
     total_steps: int = 1000

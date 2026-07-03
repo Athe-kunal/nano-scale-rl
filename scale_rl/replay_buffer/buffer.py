@@ -145,6 +145,7 @@ class ReplayBuffer:
                 "prompt": r.prompt,
                 "response": r.response,
                 "prompt_ids": r.prompt_ids,
+                "prompt_attention_mask": r.prompt_attention_mask,
                 "response_ids": r.response_record.response_ids,
                 "inference_logprobs": r.response_record.inference_logprobs,
                 "metadata": r.metadata,
@@ -164,6 +165,7 @@ class ReplayBuffer:
         *,
         packed: bool = True,
         fsdp: bool = False,
+        clear_kv_cache: bool = False,
     ) -> bool:
         """
         Call this once after each trainer gradient update.
@@ -184,6 +186,12 @@ class ReplayBuffer:
         fsdp:
             Set to True when using FSDP so full tensors are gathered before
             sending.
+        clear_kv_cache:
+            If True, abort in-flight rollouts and clear the KV cache during
+            the sync so every future token is generated under the new
+            weights. If False, in-flight rollouts are frozen and resumed
+            after the sync, keeping their (now stale) cache entries so no
+            rollout work is lost.
 
         Returns
         -------
@@ -205,7 +213,13 @@ class ReplayBuffer:
                 "[replay buffer] stale_steps={k} reached — triggering weight sync to vLLM",
                 k=self.stale_steps,
             )
-            self._sync_weights(train_model, model_update_group, packed=packed, fsdp=fsdp)
+            self._sync_weights(
+                train_model,
+                model_update_group,
+                packed=packed,
+                fsdp=fsdp,
+                clear_kv_cache=clear_kv_cache,
+            )
             return True
         return False
 
@@ -220,6 +234,7 @@ class ReplayBuffer:
         *,
         packed: bool,
         fsdp: bool,
+        clear_kv_cache: bool = False,
     ) -> None:
         logger.info(
             "Syncing trainer weights to vLLM worker at step %d (every %d steps).",
@@ -228,7 +243,11 @@ class ReplayBuffer:
         )
         asyncio.run(
             self.rollout_worker.update_weights(
-                train_model, model_update_group, packed=packed, fsdp=fsdp
+                train_model,
+                model_update_group,
+                packed=packed,
+                fsdp=fsdp,
+                clear_kv_cache=clear_kv_cache,
             )
         )
         logger.info("Weight sync to vLLM complete.")

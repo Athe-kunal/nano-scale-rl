@@ -227,6 +227,7 @@ class Trainer:
             self.model_update_group,
             packed=cfg.weight_transfer_packed,
             fsdp=self._use_fsdp_gather,
+            clear_kv_cache=cfg.vllm_clear_kv_cache,
         )
         if synced and self.rank == 0:
             logger.info(
@@ -310,17 +311,30 @@ class Trainer:
         # This guarantees vLLM serves the trainer's weights on the very first
         # rollout request — not whatever the vLLM worker loaded from disk.
         if self.rank == 0:
-            asyncio.run(self.rollout_worker.initialize_weight_transfer(
-                master_address=cfg.master_address,
-                master_port=cfg.weight_transfer_port,
-                rank_offset=trainer_world_size,
-                world_size=nccl_world_size,
-            ))
-            _, self.model_update_group = initialize_trainer(
-                master_address=cfg.master_address,
-                master_port=cfg.weight_transfer_port,
-                world_size=nccl_world_size,
-            )
+            # initialize_weight_transfer's HTTP call blocks server-side until
+            # the vLLM worker's NCCL rendezvous connects — and that rendezvous
+            # needs the trainer (rank 0) to dial in via initialize_trainer.
+            # Awaiting the HTTP call to completion before starting
+            # initialize_trainer would deadlock: each side would be waiting
+            # for the other to go first. Run them concurrently instead.
+            async def _rendezvous() -> Any:
+                _, (_, model_update_group) = await asyncio.gather(
+                    self.rollout_worker.initialize_weight_transfer(
+                        master_address=cfg.master_address,
+                        master_port=cfg.weight_transfer_port,
+                        rank_offset=trainer_world_size,
+                        world_size=nccl_world_size,
+                    ),
+                    asyncio.to_thread(
+                        initialize_trainer,
+                        cfg.master_address,
+                        cfg.weight_transfer_port,
+                        nccl_world_size,
+                    ),
+                )
+                return model_update_group
+
+            self.model_update_group = asyncio.run(_rendezvous())
             logger.info("Performing initial weight sync: trainer → vLLM ...")
             asyncio.run(self.rollout_worker.update_weights(
                 self.model,
