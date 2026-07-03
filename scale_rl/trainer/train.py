@@ -28,6 +28,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from scale_rl.algos.loss import ALGORITHMS, compute_advantages
 from scale_rl.algos.utils import get_logprobs, prepare_batch
+from scale_rl.eval.eval_aime_2025 import run_eval
 from scale_rl.inference.rollout_worker import (
     initialize_trainer,
     vLLMRollout,
@@ -438,6 +439,18 @@ class Trainer:
                             f"clip_frac={metrics['clip_frac']:.3f}  "
                             f"mean_reward={metrics['mean_reward']:.4f}"
                         )
+
+                if cfg.eval_every > 0 and global_step % cfg.eval_every == 0:
+                    if self.rank == 0:
+                        run_eval(
+                            self.rollout_worker,
+                            eval_k=cfg.eval_k,
+                            eval_max_tokens=cfg.eval_max_tokens,
+                            step=global_step,
+                            temperature=cfg.eval_temperature,
+                            top_k=cfg.eval_top_k,
+                        )
+                    dist.barrier()
 
                 if global_step >= cfg.total_steps:
                     break

@@ -74,10 +74,14 @@ def run_eval(
     }
 
     print0(f"[eval step={step}] {json.dumps(metrics)}")
-    for r in per_problem:
+    for i, (r, prob) in enumerate(zip(per_problem, problems)):
+        batch = rollouts[i * eval_k : (i + 1) * eval_k]
         print0(
             f"  problem {r['problem_idx']:02d}: {r['n_correct']}/{eval_k}  pass@{eval_k}={r['pass_at_k']:.3f}"
         )
+        print0(f"    question: {prob['problem']}")
+        for j, ro in enumerate(batch):
+            print0(f"    sample {j}: {ro.response}")
 
     if wandb.run is not None:
         wandb.log(metrics, step=step)

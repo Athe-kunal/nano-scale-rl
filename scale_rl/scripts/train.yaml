@@ -80,9 +80,15 @@ weight_transfer_packed: false  # packed=True triggers a vLLM/torch 2.10 API inco
 # ---------------------------------------------------------------------------
 # Training loop
 # ---------------------------------------------------------------------------
-total_steps: 1000
+total_steps: 50
 log_every: 10
 high_pass_rate_threshold: 0.9
+
+eval_every: 50          # evaluate on AIME 2025 every N trainer steps (0 = disabled)
+eval_k: 4               # samples per problem, for pass@k
+eval_max_tokens: 8192
+eval_temperature: 0.6
+eval_top_k: -1
 
 # ---------------------------------------------------------------------------
 # Wandb

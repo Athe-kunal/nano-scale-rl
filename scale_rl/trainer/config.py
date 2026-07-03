@@ -61,6 +61,13 @@ class TrainerConfig:
     log_every: int = 10
     high_pass_rate_threshold: float = 0.9
 
+    # Evaluation (AIME 2025, via scale_rl.eval.eval_aime_2025.run_eval)
+    eval_every: int = 0        # evaluate every N trainer steps (0 = disabled)
+    eval_k: int = 4            # samples per problem, for pass@k
+    eval_max_tokens: int = 2048
+    eval_temperature: float = 0.6
+    eval_top_k: int = -1
+
     # Wandb
     wandb_project: str = "ScaleRL"
     wandb_run_name: str = ""   # empty = wandb auto-names the run
