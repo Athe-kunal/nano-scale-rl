@@ -50,12 +50,7 @@ def main() -> None:
 
     # ---- dataset ----
     if rank == 0:
-        logger.info(
-            "Loading dataset %s/%s (split=%s) ...",
-            dataset_id,
-            dataset_config,
-            dataset_split,
-        )
+        logger.info(f"Loading dataset {dataset_id}/{dataset_config} (split={dataset_split}) ...")
     records = DapoMathEnv.load(
         dataset_id=dataset_id,
         config_name=dataset_config,
@@ -64,7 +59,7 @@ def main() -> None:
     prompts = [env.prompt for env in records]
     envs = records
     if rank == 0:
-        logger.info("Dataset loaded: %d examples.", len(records))
+        logger.info(f"Dataset loaded: {len(records)} examples.")
 
     # ---- trainer ----
     trainer = Trainer(cfg, device_mesh=device_mesh)

@@ -199,19 +199,15 @@ class ReplayBuffer:
             True if a weight sync was performed this step.
         """
         self._trainer_steps += 1
+        remaining = self.stale_steps - (self._trainer_steps % self.stale_steps)
         logger.info(
-            "[replay buffer] trainer step {step} complete  "
-            "| buffer size: {buf}/{cap}  "
-            "| next sync in {remaining} step(s)",
-            step=self._trainer_steps,
-            buf=len(self._store),
-            cap=self._store.maxlen,
-            remaining=self.stale_steps - (self._trainer_steps % self.stale_steps),
+            f"[replay buffer] trainer step {self._trainer_steps} complete  "
+            f"| buffer size: {len(self._store)}/{self._store.maxlen}  "
+            f"| next sync in {remaining} step(s)"
         )
         if self._trainer_steps % self.stale_steps == 0:
             logger.info(
-                "[replay buffer] stale_steps={k} reached — triggering weight sync to vLLM",
-                k=self.stale_steps,
+                f"[replay buffer] stale_steps={self.stale_steps} reached — triggering weight sync to vLLM"
             )
             self._sync_weights(
                 train_model,
@@ -237,9 +233,8 @@ class ReplayBuffer:
         clear_kv_cache: bool = False,
     ) -> None:
         logger.info(
-            "Syncing trainer weights to vLLM worker at step %d (every %d steps).",
-            self._trainer_steps,
-            self.stale_steps,
+            f"Syncing trainer weights to vLLM worker at step {self._trainer_steps} "
+            f"(every {self.stale_steps} steps)."
         )
         asyncio.run(
             self.rollout_worker.update_weights(
@@ -250,4 +245,5 @@ class ReplayBuffer:
                 clear_kv_cache=clear_kv_cache,
             )
         )
-        logger.info("Weight sync to vLLM complete.")
+        kv_cache_action = "aborted (cleared)" if clear_kv_cache else "kept (stale)"
+        logger.info(f"Weight sync to vLLM complete. In-flight rollouts: {kv_cache_action}.")

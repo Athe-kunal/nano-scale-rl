@@ -212,14 +212,11 @@ class Trainer:
         }
 
         if self.rank == 0:
+            step = self.buffer.trainer_steps + 1  # +1: incremented inside on_trainer_step
             logger.info(
-                "[trainer step {step}] loss={loss:.4f}  clip_frac={clip_frac:.3f}"
-                "  mean_reward={mean_reward:.4f}  algorithm={algo}",
-                step=self.buffer.trainer_steps + 1,  # +1: incremented inside on_trainer_step
-                loss=metrics["loss"],
-                clip_frac=metrics["clip_frac"],
-                mean_reward=metrics["mean_reward"],
-                algo=cfg.algorithm,
+                f"[trainer step {step}] loss={metrics['loss']:.4f}  "
+                f"clip_frac={metrics['clip_frac']:.3f}  "
+                f"mean_reward={metrics['mean_reward']:.4f}  algorithm={cfg.algorithm}"
             )
 
         synced = self.buffer.on_trainer_step(
@@ -231,12 +228,8 @@ class Trainer:
         )
         if synced and self.rank == 0:
             logger.info(
-                "[weight sync] trainer step {step} → vLLM  "
-                "(every {k} steps, packed={packed}, fsdp={fsdp})",
-                step=self.buffer.trainer_steps,
-                k=cfg.stale_steps,
-                packed=cfg.weight_transfer_packed,
-                fsdp=True,
+                f"[weight sync] trainer step {self.buffer.trainer_steps} → vLLM  "
+                f"(every {cfg.stale_steps} steps, packed={cfg.weight_transfer_packed}, fsdp=True)"
             )
 
         return metrics
@@ -287,11 +280,7 @@ class Trainer:
                     "total_steps": cfg.total_steps,
                 },
             )
-            logger.info(
-                "Wandb run initialised: project={proj} run={run}",
-                proj=cfg.wandb_project,
-                run=wandb.run.name,
-            )
+            logger.info(f"Wandb run initialised: project={cfg.wandb_project} run={wandb.run.name}")
 
         # Tell the vLLM worker to open its end of the NCCL rendezvous (async on
         # the worker side), then immediately open the trainer end.  Both sides
@@ -360,8 +349,7 @@ class Trainer:
             if not active_indices:
                 if self.rank == 0:
                     logger.warning(
-                        "All {} prompts have high_pass_rate=True — nothing left to train on.",
-                        len(envs),
+                        f"All {len(envs)} prompts have high_pass_rate=True — nothing left to train on."
                     )
                 break
 
@@ -403,18 +391,14 @@ class Trainer:
                     if pass_rate >= HIGH_PASS_THRESHOLD and not env.high_pass_rate:
                         env.high_pass_rate = True
                         logger.info(
-                            "[high_pass_rate] prompt idx={idx} marked — "
-                            "pass_rate={rate:.2f} >= {thresh:.2f}, will be skipped henceforth.",
-                            idx=batch_indices[i],
-                            rate=pass_rate,
-                            thresh=HIGH_PASS_THRESHOLD,
+                            f"[high_pass_rate] prompt idx={batch_indices[i]} marked — "
+                            f"pass_rate={pass_rate:.2f} >= {HIGH_PASS_THRESHOLD:.2f}, "
+                            f"will be skipped henceforth."
                         )
 
                 newly_filtered = sum(1 for e in envs if e.high_pass_rate)
                 logger.info(
-                    "[high_pass_rate] {filtered}/{total} prompts filtered out so far.",
-                    filtered=newly_filtered,
-                    total=len(envs),
+                    f"[high_pass_rate] {newly_filtered}/{len(envs)} prompts filtered out so far."
                 )
                 if cfg.wandb_enabled:
                     wandb.log(
@@ -450,11 +434,9 @@ class Trainer:
 
                     if global_step % cfg.log_every == 0:
                         logger.info(
-                            "step={step}  loss={loss:.4f}  clip_frac={cf:.3f}  mean_reward={mr:.4f}",
-                            step=global_step,
-                            loss=metrics["loss"],
-                            cf=metrics["clip_frac"],
-                            mr=metrics["mean_reward"],
+                            f"step={global_step}  loss={metrics['loss']:.4f}  "
+                            f"clip_frac={metrics['clip_frac']:.3f}  "
+                            f"mean_reward={metrics['mean_reward']:.4f}"
                         )
 
                 if global_step >= cfg.total_steps:

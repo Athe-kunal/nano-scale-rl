@@ -4,7 +4,7 @@
 # ---------------------------------------------------------------------------
 # Model
 # ---------------------------------------------------------------------------
-model_path: "Qwen/Qwen2.5-1.5B-Instruct"
+model_path: "Qwen/Qwen2.5-0.5B-Instruct"
 dtype: "bfloat16"
 
 # ---------------------------------------------------------------------------
@@ -37,15 +37,15 @@ tis_C: 0.0             # temporal IS truncation threshold (0 = disabled)
 # ---------------------------------------------------------------------------
 # Sequence
 # ---------------------------------------------------------------------------
-max_seq_len: 4096
+max_seq_len: 8192
 
 # ---------------------------------------------------------------------------
 # Rollout / replay buffer
 # Total rollouts per collection round = prompts_per_batch * rollouts_per_step
 # ---------------------------------------------------------------------------
-prompts_per_batch: 16
+prompts_per_batch: 8
 rollouts_per_step: 4   # G in GRPO/DAPO
-stale_steps: 8         # sync trainer → vLLM every K gradient updates
+stale_steps: 2         # sync trainer → vLLM every K gradient updates
 rollout_worker_url: "http://127.0.0.1:8047"
 
 # ---------------------------------------------------------------------------
