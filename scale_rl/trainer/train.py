@@ -169,7 +169,9 @@ class Trainer:
             micro_tensors = tensors[micro_start:micro_end]
             micro_adv = micro_tensors["advantages"]
 
-            logprobs, response_mask = get_logprobs(self.model, micro_tensors)
+            logprobs, response_mask = get_logprobs(
+                self.model, micro_tensors, chunk_size=cfg.logprob_chunk_size
+            )
 
             loss = self._loss_fn(
                 logprobs=logprobs,

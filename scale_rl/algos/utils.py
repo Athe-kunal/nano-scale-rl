@@ -60,13 +60,15 @@ def prepare_batch(
     )
 
 
-def get_logprobs(model, tensors: TensorDict):
+def get_logprobs(model, tensors: TensorDict, chunk_size: int = 1024):
     """Compute per-response-token log-probs under `model`.
 
     Args:
         model: Policy model.
         tensors: TensorDict with ``input_ids``, ``attention_mask``, and
             ``response_mask``, all sharing batch_size ``[B]``.
+        chunk_size: Max sequences per forward pass through `model`, to cap
+            peak logit memory at ``[chunk_size, T, V]`` instead of ``[B, T, V]``.
 
     Returns a tuple ``(token_logprobs, shift_mask)`` each of shape ``[B, T-1]``:
       - ``token_logprobs[b, t] = log π_θ(input_ids[b, t+1] | input_ids[b, :t+1])``
@@ -81,9 +83,6 @@ def get_logprobs(model, tensors: TensorDict):
     shift_mask = tensors["response_mask"][:, 1:]  # [B, T-1]
     token_logprobs = torch.zeros(B, T - 1, device=tensors.device, dtype=torch.float32)
 
-    # Chunk along the batch dimension to cap peak logit memory at
-    # [chunk_size, T, V] instead of [B, T, V].
-    chunk_size = 1024
     for start in range(0, B, chunk_size):
         end = min(start + chunk_size, B)
         chunk = tensors[start:end]  # slices input_ids + attention_mask together

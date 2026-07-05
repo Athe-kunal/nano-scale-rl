@@ -37,6 +37,7 @@ tis_C: 0.0             # temporal IS truncation threshold (0 = disabled)
 # Sequence
 # ---------------------------------------------------------------------------
 max_seq_len: 8192
+logprob_chunk_size: 32   # max sequences per get_logprobs forward pass
 
 # ---------------------------------------------------------------------------
 # Rollout / replay buffer

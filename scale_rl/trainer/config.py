@@ -29,6 +29,7 @@ class TrainerConfig:
 
     # Sequence
     max_seq_len: int = 4096
+    logprob_chunk_size: int = 1024  # max sequences per get_logprobs forward pass
 
     # Rollout / buffer
     prompts_per_batch: int = 16
