@@ -7,6 +7,7 @@ from loguru import logger
 from skyrl_gym.envs.base_text_env import ConversationType
 
 from scale_rl.envs.base import ScaleRLBase
+from scale_rl.inference.rollout_worker import vLLMRollout
 
 DEFAULT_SYSTEM_PROMPT = (
     "Please reason step by step, and put your final answer in \\boxed{}."
@@ -109,15 +110,13 @@ class DapoMathEnv(ScaleRLBase):
     @classmethod
     def evaluate(
         cls,
-        rollout_worker_url: str,
+        rollout_worker: vLLMRollout,
         step: int,
-        tokenizer: Any | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         from scale_rl.eval.eval_aime_2025 import run_eval
         return run_eval(
-            rollout_worker_url=rollout_worker_url,
-            tokenizer=tokenizer,
+            rollout_worker=rollout_worker,
             step=step,
             **kwargs,
         )

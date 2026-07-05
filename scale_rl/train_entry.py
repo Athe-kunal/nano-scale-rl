@@ -18,7 +18,7 @@ from loguru import logger
 from scale_rl.trainer.setup_utils import compute_init, compute_cleanup
 from scale_rl.trainer.config import TrainerConfig
 from scale_rl.trainer.train import Trainer
-from scale_rl.envs.dapo_env import DapoMathEnv
+from scale_rl.envs import DATASET_ENV_CLS
 
 
 def build_config(yaml_path: str) -> TrainerConfig:
@@ -38,9 +38,7 @@ def main() -> None:
     cfg = build_config(args.config)
 
     raw_yaml: dict = OmegaConf.to_container(OmegaConf.load(args.config), resolve=True)  # type: ignore[assignment]
-    dataset_id = raw_yaml.get("dataset_id", "open-r1/DAPO-Math-17k-Processed")
-    dataset_config = raw_yaml.get("dataset_config", "all")
-    dataset_split = raw_yaml.get("dataset_split", "train")
+    env_cls = DATASET_ENV_CLS[cfg.dataset]
 
     # ---- device mesh for FSDP ----
     # Single-node: 1D mesh over all trainer GPUs → FULL_SHARD.
@@ -49,13 +47,19 @@ def main() -> None:
     device_mesh = dist.device_mesh.init_device_mesh("cuda", (world_size,))
 
     # ---- dataset ----
-    if rank == 0:
-        logger.info(f"Loading dataset {dataset_id}/{dataset_config} (split={dataset_split}) ...")
-    records = DapoMathEnv.load(
-        dataset_id=dataset_id,
-        config_name=dataset_config,
-        split=dataset_split,
-    )
+    if cfg.dataset == "dapo":
+        dataset_id = raw_yaml.get("dataset_id", "open-r1/DAPO-Math-17k-Processed")
+        dataset_config = raw_yaml.get("dataset_config", "all")
+        dataset_split = raw_yaml.get("dataset_split", "train")
+        if rank == 0:
+            logger.info(f"Loading dataset {dataset_id}/{dataset_config} (split={dataset_split}) ...")
+        records = env_cls.load(dataset_id=dataset_id, config_name=dataset_config, split=dataset_split)
+    elif cfg.dataset == "livecodebench":
+        dataset_split = raw_yaml.get("dataset_split", "train")
+        if rank == 0:
+            logger.info(f"Loading livecodebench (split={dataset_split}) ...")
+        records = env_cls.load(dataset_split=dataset_split)
+
     prompts = [env.prompt for env in records]
     envs = records
     if rank == 0:

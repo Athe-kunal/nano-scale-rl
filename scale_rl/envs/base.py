@@ -3,6 +3,8 @@ from typing import Any
 
 from skyrl_gym.envs.base_text_env import BaseTextEnv, BaseTextEnvStepOutput, ConversationType
 
+from scale_rl.inference.rollout_worker import vLLMRollout
+
 
 class ScaleRLBase(BaseTextEnv):
     """
@@ -45,7 +47,7 @@ class ScaleRLBase(BaseTextEnv):
     @abc.abstractmethod
     def evaluate(
         cls,
-        rollout_worker_url: str,
+        rollout_worker: vLLMRollout,
         step: int,
         **kwargs: Any,
     ) -> dict[str, Any]:

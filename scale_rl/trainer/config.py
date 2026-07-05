@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Literal
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -8,6 +9,8 @@ class TrainerConfig:
     # Model
     model_path: str
     dtype: str = "bfloat16"
+
+    dataset: Literal["dapo", "livecodebench"] = "dapo"
 
     # Optimiser
     lr: float = 1e-6
@@ -61,7 +64,7 @@ class TrainerConfig:
     log_every: int = 10
     high_pass_rate_threshold: float = 0.9
 
-    # Evaluation (AIME 2025, via scale_rl.eval.eval_aime_2025.run_eval)
+    # Evaluation
     eval_every: int = 0        # evaluate every N trainer steps (0 = disabled)
     eval_k: int = 4            # samples per problem, for pass@k
     eval_max_tokens: int = 2048
