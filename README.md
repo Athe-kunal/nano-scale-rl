@@ -14,13 +14,13 @@ frameworks.
 ## How it works
 
 Training runs as two cooperating processes, started by
-`scale_rl/scripts/train.sh`:
+`scale_rl/train.sh`:
 
 - **Rollout worker**: a stock `vllm serve <model>` process, started with
   `VLLM_SERVER_DEV_MODE=1` to expose dev-only HTTP endpoints
   (`/pause`, `/resume`, `/update_weights`, `/init_weight_transfer_engine`)
   alongside the normal completions API.
-- **FSDP trainer**: launched via `torchrun -m scale_rl.scripts.train_entry`.
+- **FSDP trainer**: launched via `torchrun -m scale_rl.train_entry`.
   Wraps a HF causal LM in FSDP, and each step:
   1. requests rollouts from the vLLM worker over HTTP
      (`scale_rl/inference/rollout_worker.py`, an async HTTP client — not a
@@ -51,15 +51,15 @@ penalty (`kl_coef`, grpo/gspo only) and truncated importance sampling
   `open-r1/DAPO-Math-17k-Processed` (the default in `train.yaml`): extracts
   boxed answers and rewards numeric/string matches.
 - `scale_rl/envs/livecodebench.py` — a LiveCodeBench-style coding
-  environment with subprocess execution and pass@k scoring (not wired into
-  the default `train.yaml`/`train.sh` flow).
+  environment with subprocess execution and pass@k scoring. Selected via
+  `dataset: livecodebench` in `train.yaml` (default is `dapo`).
 - `scale_rl/eval/eval_aime_2025.py` — periodic evaluation on AIME 2025
   (`eval_every` in `train.yaml`), computing pass@k via the same vLLM client
   used for training rollouts.
 
 ## Configuration
 
-`scale_rl/scripts/train.yaml` maps 1:1 onto `TrainerConfig`
+`scale_rl/train.yaml` maps 1:1 onto `TrainerConfig`
 (`scale_rl/trainer/config.py`); `train_entry.py` filters the parsed yaml
 through `TrainerConfig`'s fields, so unrecognized keys are silently dropped.
 `train.sh` re-parses a subset of the same yaml with a small Python snippet to
@@ -75,5 +75,5 @@ derive GPU assignments and vLLM launch flags.
   rollouts.
 - `scale_rl/replay_buffer/` — buffer for storing/sampling rollouts.
 - `scale_rl/eval/` — evaluation harness.
-- `scale_rl/scripts/train.sh` / `train.yaml` / `train_entry.py` — launches
+- `scale_rl/train.sh` / `train.yaml` / `train_entry.py` — launches
   the vLLM rollout worker and the FSDP trainer as separate processes.

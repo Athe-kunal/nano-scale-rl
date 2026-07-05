@@ -20,7 +20,10 @@ class ScaleRLBase(BaseTextEnv):
         super().__init__()
         self.kind = kind
         self.dataset = dataset
-        self.high_pass_rate: bool = False
+        # Set to the observed pass_rate once that threshold has been crossed;
+        # None means this prompt hasn't been filtered out on that side yet.
+        self.high_pass_rate: float | None = None
+        self.low_pass_rate: float | None = None
 
     @abc.abstractmethod
     def init(self, prompt: ConversationType) -> tuple[ConversationType, dict[str, Any]]:

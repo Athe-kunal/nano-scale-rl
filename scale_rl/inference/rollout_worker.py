@@ -173,6 +173,7 @@ class vLLMRollout:
             response_ids=token_ids,
             inference_logprobs=[[lp] for lp in token_logprobs],
             reward=[],
+            finish_reason=choice.get("finish_reason", ""),
         )
         return RolloutRecord(
             prompt=prompt,

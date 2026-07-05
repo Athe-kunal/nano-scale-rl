@@ -57,12 +57,18 @@ def _translate_private_test_cases(encoded_data, fn_name: str) -> str:
     )
 
 
-def load_livecodebench(dataset_split: str, until: datetime | None = None) -> Dataset:
-    ds = load_dataset(
-        "livecodebench/code_generation_lite", split="test", revision="refs/pr/6"
-    )
+def load_livecodebench(
+    dataset_id: str = "livecodebench/code_generation_lite",
+    config_name: str | None = None,
+    split: str = "train",
+    until: datetime | None = None,
+) -> Dataset:
+    # The HF dataset only publishes one raw split, literally named "test";
+    # our train/test distinction below is a contest_date cutoff over it, not
+    # the same thing as the `split` argument to this function.
+    ds = load_dataset(dataset_id, config_name, split="test", revision="refs/pr/6")
 
-    if dataset_split == "train":
+    if split == "train":
         ds = ds.filter(lambda ex: ex["contest_date"] < LCB_TRAIN_CUTOFF)
     else:
         ds = ds.filter(lambda ex: ex["contest_date"] >= LCB_TEST_CUTOFF)
@@ -277,9 +283,15 @@ class LiveCodeBenchEnv(ScaleRLBase):
 
     @classmethod
     def load(
-        cls, dataset_split: str = "train", until: datetime | None = None
+        cls,
+        dataset_id: str = "livecodebench/code_generation_lite",
+        config_name: str | None = None,
+        split: str = "train",
+        until: datetime | None = None,
     ) -> list[LiveCodeBenchEnv]:
-        ds = load_livecodebench(dataset_split=dataset_split, until=until)
+        ds = load_livecodebench(
+            dataset_id=dataset_id, config_name=config_name, split=split, until=until
+        )
         envs = []
         for row in ds:
             tests = (
@@ -300,7 +312,7 @@ def run_livecodebench_eval(
     top_k: int = -1,
 ) -> dict[str, Any]:
     """Evaluate on LiveCodeBench test split (problems after LCB_TEST_CUTOFF)."""
-    test_ds = load_livecodebench(dataset_split="test")
+    test_ds = load_livecodebench(split="test")
     problems = [dict(r) for r in test_ds]
 
     prompts = [p["prompt"] for p in problems]

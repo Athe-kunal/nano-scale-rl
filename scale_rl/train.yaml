@@ -4,14 +4,13 @@
 # ---------------------------------------------------------------------------
 # Model
 # ---------------------------------------------------------------------------
-model_path: "Qwen/Qwen2.5-0.5B-Instruct"
+model_path: "Qwen/Qwen3-1.7B"
 dtype: "bfloat16"
 
 # ---------------------------------------------------------------------------
 # Dataset
 # ---------------------------------------------------------------------------
-dataset_id: "open-r1/DAPO-Math-17k-Processed"
-dataset_config: "all"
+dataset: "dapo"   # "dapo" | "livecodebench"
 dataset_split: "train"
 
 # ---------------------------------------------------------------------------
@@ -83,6 +82,7 @@ weight_transfer_packed: false  # packed=True triggers a vLLM/torch 2.10 API inco
 total_steps: 50
 log_every: 10
 high_pass_rate_threshold: 0.9
+low_pass_rate_threshold: 0.1   # 0 = disabled; prompts with pass_rate <= this are dropped as too hard
 
 eval_every: 50          # evaluate on AIME 2025 every N trainer steps (0 = disabled)
 eval_k: 4               # samples per problem, for pass@k
@@ -107,6 +107,6 @@ trainer_gpu_ids: [0]
 vllm_gpu_ids: [1]
 
 # vLLM engine settings (passed to rollout_worker.py)
-vllm_gpu_memory_utilization: 0.97
+vllm_gpu_memory_utilization: 0.9
 vllm_weight_transfer_backend: "nccl"
 vllm_clear_kv_cache: false

@@ -78,7 +78,7 @@ class Trainer:
 
         base_model = AutoModelForCausalLM.from_pretrained(
             cfg.model_path,
-            torch_dtype=getattr(torch, cfg.dtype),
+            dtype=getattr(torch, cfg.dtype),
         )
         self.model: nn.Module = prepare_dp_model(
             base_model,
@@ -141,13 +141,6 @@ class Trainer:
         """
         cfg = self.cfg
 
-        rewards = torch.tensor(batch["rewards"], dtype=torch.float32, device=self.device)
-        advantages = compute_advantages(
-            cfg.algorithm,
-            rewards,
-            num_samples_per_prompt=cfg.rollouts_per_step,
-        )
-
         tensors = prepare_batch(
             batch["rollouts"],
             batch["rewards"],
@@ -155,9 +148,15 @@ class Trainer:
             cfg.max_seq_len,
             self.device,
         )
+        tensors["advantages"] = compute_advantages(
+            cfg.algorithm,
+            tensors["rewards"],
+            num_samples_per_prompt=cfg.rollouts_per_step,
+        )
+        rewards = tensors["rewards"]
 
         # Split into micro-batches for gradient accumulation to save memory.
-        B = tensors["input_ids"].shape[0]
+        B = tensors.batch_size[0]
         accum_steps = cfg.gradient_accumulation_steps
         micro_size = max(1, B // accum_steps)
 
@@ -167,15 +166,10 @@ class Trainer:
 
         for micro_start in range(0, B, micro_size):
             micro_end = min(micro_start + micro_size, B)
-            micro_tensors = {k: v[micro_start:micro_end] for k, v in tensors.items()}
-            micro_adv = advantages[micro_start:micro_end]
+            micro_tensors = tensors[micro_start:micro_end]
+            micro_adv = micro_tensors["advantages"]
 
-            logprobs, response_mask = get_logprobs(
-                self.model,
-                micro_tensors["input_ids"],
-                micro_tensors["attention_mask"],
-                micro_tensors["response_mask"],
-            )
+            logprobs, response_mask = get_logprobs(self.model, micro_tensors)
 
             loss = self._loss_fn(
                 logprobs=logprobs,
@@ -278,6 +272,7 @@ class Trainer:
                     "max_new_tokens": cfg.max_new_tokens,
                     "temperature": cfg.temperature,
                     "high_pass_rate_threshold": cfg.high_pass_rate_threshold,
+                    "low_pass_rate_threshold": cfg.low_pass_rate_threshold,
                     "total_steps": cfg.total_steps,
                 },
             )
@@ -340,17 +335,17 @@ class Trainer:
 
         global_step = 0
         prompt_idx = 0
-        # Build the active pool — envs flagged high_pass_rate are excluded.
-        active_indices = [i for i, e in enumerate(envs) if not e.high_pass_rate]
-        HIGH_PASS_THRESHOLD = cfg.high_pass_rate_threshold
 
         while global_step < cfg.total_steps:
             # Refresh active pool each round (flags may have been set last round).
-            active_indices = [i for i, e in enumerate(envs) if not e.high_pass_rate]
+            active_indices = [
+                i for i, e in enumerate(envs)
+                if e.high_pass_rate is None and e.low_pass_rate is None
+            ]
             if not active_indices:
                 if self.rank == 0:
                     logger.warning(
-                        f"All {len(envs)} prompts have high_pass_rate=True — nothing left to train on."
+                        f"All {len(envs)} prompts have been filtered out — nothing left to train on."
                     )
                 break
 
@@ -381,31 +376,35 @@ class Trainer:
                 rewards: list[float] = []
                 for i, env in enumerate(batch_envs):
                     group_rewards: list[float] = []
+                    n_truncated = 0
                     for g in range(cfg.rollouts_per_step):
-                        r = rollouts[i * cfg.rollouts_per_step + g].response
-                        reward, _ = env.compute_reward(r)
+                        record = rollouts[i * cfg.rollouts_per_step + g]
+                        reward, _ = env.compute_reward(record.response)
                         rewards.append(reward)
                         group_rewards.append(reward)
+                        if record.response_record.finish_reason == "length":
+                            n_truncated += 1
 
-                    # Mark env if binary pass rate >= threshold.
                     pass_rate = sum(group_rewards) / len(group_rewards)
-                    if pass_rate >= HIGH_PASS_THRESHOLD and not env.high_pass_rate:
-                        env.high_pass_rate = True
-                        logger.info(
-                            f"[high_pass_rate] prompt idx={batch_indices[i]} marked — "
-                            f"pass_rate={pass_rate:.2f} >= {HIGH_PASS_THRESHOLD:.2f}, "
-                            f"will be skipped henceforth."
-                        )
+                    if pass_rate >= cfg.high_pass_rate_threshold and env.high_pass_rate is None:
+                        env.high_pass_rate = pass_rate
+                        logger.info(f"[high_pass_rate] prompt idx={batch_indices[i]} marked — pass_rate={pass_rate:.2f} >= {cfg.high_pass_rate_threshold:.2f}, will be skipped henceforth.")
+                    elif 0 < cfg.low_pass_rate_threshold >= pass_rate and env.low_pass_rate is None:
+                        env.low_pass_rate = pass_rate
+                        logger.info(f"[low_pass_rate] prompt idx={batch_indices[i]} marked — pass_rate={pass_rate:.2f} <= {cfg.low_pass_rate_threshold:.2f} ({n_truncated}/{cfg.rollouts_per_step} hit max_new_tokens), will be skipped henceforth.")
 
-                newly_filtered = sum(1 for e in envs if e.high_pass_rate)
+                n_high_filtered = sum(1 for e in envs if e.high_pass_rate is not None)
+                n_low_filtered = sum(1 for e in envs if e.low_pass_rate is not None)
                 logger.info(
-                    f"[high_pass_rate] {newly_filtered}/{len(envs)} prompts filtered out so far."
+                    f"[filter] {n_high_filtered} too easy, {n_low_filtered} too hard, "
+                    f"{len(envs) - n_high_filtered - n_low_filtered}/{len(envs)} active."
                 )
                 if cfg.wandb_enabled:
                     wandb.log(
                         {
-                            "data/high_pass_rate_filtered": newly_filtered,
-                            "data/active_prompts": len(envs) - newly_filtered,
+                            "data/high_pass_rate_filtered": n_high_filtered,
+                            "data/low_pass_rate_filtered": n_low_filtered,
+                            "data/active_prompts": len(envs) - n_high_filtered - n_low_filtered,
                         },
                         step=global_step,
                     )

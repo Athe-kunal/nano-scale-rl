@@ -246,4 +246,4 @@ class ReplayBuffer:
             )
         )
         kv_cache_action = "aborted (cleared)" if clear_kv_cache else "kept (stale)"
-        logger.info(f"Weight sync to vLLM complete. In-flight rollouts: {kv_cache_action}.")
+        logger.info(f"Weight sync to vLLM complete. In-flight rollouts KV cache: {kv_cache_action}.")

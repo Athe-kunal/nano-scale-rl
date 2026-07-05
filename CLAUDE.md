@@ -38,15 +38,20 @@ understanding over speed of delivery.
 
 ## Code style
 
-- Follow **Google Python Style Guide** conventions: docstrings in Google
-  format (`Args:`, `Returns:`, `Raises:`), 4-space indentation, `snake_case`
-  for functions/variables, `CapWords` for classes, module-level constants in
-  `ALL_CAPS`. Avoid overly clever one-liners; prefer readable, explicit code
-  — this is a teaching codebase, clarity beats brevity.
+@CODE.md
+
+- Follow the **Google Python Style Guide** (see `CODE.md`) **strictly** for
+  every code change: docstrings in Google format (`Args:`, `Returns:`,
+  `Raises:`), 4-space indentation, `snake_case` for functions/variables,
+  `CapWords` for classes, module-level constants in `ALL_CAPS`. Avoid overly
+  clever one-liners; prefer readable, explicit code — this is a teaching
+  codebase, clarity beats brevity.
 - Type hints on public function signatures.
 - No unnecessary abstractions — this codebase favors directly readable code
   over generic frameworks, since the point is for the user to be able to
   trace execution end to end.
+- Prefer fewer lines of code, but never at the expense of readability —
+  collapse boilerplate, don't collapse clarity.
 
 ## Repo layout
 
@@ -59,7 +64,7 @@ understanding over speed of delivery.
   produce prompts and score rollouts.
 - `scale_rl/replay_buffer/` — buffer for storing/sampling rollouts.
 - `scale_rl/eval/` — evaluation harness (e.g. AIME 2025).
-- `scale_rl/scripts/train.sh` / `train.yaml` / `train_entry.py` — launches
+- `scale_rl/train.sh` / `train.yaml` / `train_entry.py` — launches
   the vLLM rollout worker and the FSDP trainer as separate processes.
 
 Note: this repo has moved fast and has some drift between `train.sh` /

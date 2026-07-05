@@ -1,6 +1,7 @@
 from typing import Any
 
 import torch
+from tensordict import TensorDict
 
 
 def prepare_batch(
@@ -9,7 +10,7 @@ def prepare_batch(
     tokenizer: Any,
     max_seq_len: int,
     device: torch.device,
-) -> dict[str, torch.Tensor]:
+) -> TensorDict:
     input_ids_list, prompt_attn_list, response_mask_list = [], [], []
     prompt_lens, response_lens = [], []
     for rollout in rollouts:
@@ -45,17 +46,27 @@ def prepare_batch(
             row[P - 1 + i] = lp[0] if isinstance(lp, list) else lp
         inf_lp_list.append(row)
 
-    return {
-        "input_ids": torch.tensor(padded_ids, dtype=torch.long, device=device),
-        "attention_mask": torch.tensor(attn_masks, dtype=torch.long, device=device),
-        "response_mask": torch.tensor(padded_masks, dtype=torch.float, device=device),
-        "rewards": torch.tensor(rewards, dtype=torch.float, device=device),
-        "inference_logprobs": torch.tensor(inf_lp_list, dtype=torch.float, device=device),
-    }
+    batch_size = len(rollouts)
+    return TensorDict(
+        {
+            "input_ids": torch.tensor(padded_ids, dtype=torch.long, device=device),
+            "attention_mask": torch.tensor(attn_masks, dtype=torch.long, device=device),
+            "response_mask": torch.tensor(padded_masks, dtype=torch.float, device=device),
+            "rewards": torch.tensor(rewards, dtype=torch.float, device=device),
+            "inference_logprobs": torch.tensor(inf_lp_list, dtype=torch.float, device=device),
+        },
+        batch_size=[batch_size],
+        device=device,
+    )
 
 
-def get_logprobs(model, input_ids, attention_mask, response_mask):
+def get_logprobs(model, tensors: TensorDict):
     """Compute per-response-token log-probs under `model`.
+
+    Args:
+        model: Policy model.
+        tensors: TensorDict with ``input_ids``, ``attention_mask``, and
+            ``response_mask``, all sharing batch_size ``[B]``.
 
     Returns a tuple ``(token_logprobs, shift_mask)`` each of shape ``[B, T-1]``:
       - ``token_logprobs[b, t] = log π_θ(input_ids[b, t+1] | input_ids[b, :t+1])``
@@ -66,24 +77,25 @@ def get_logprobs(model, input_ids, attention_mask, response_mask):
     sample-level masked-mean form makes the clip bounds essentially non-
     functional (the geometric mean of many per-token ratios is always ≈ 1).
     """
-    B, T = input_ids.shape
-    shift_labels = input_ids[:, 1:]  # [B, T-1]
-    shift_mask = response_mask[:, 1:]  # [B, T-1]
-    token_logprobs = torch.zeros(B, T - 1, device=input_ids.device, dtype=torch.float32)
+    B, T = tensors["input_ids"].shape
+    shift_mask = tensors["response_mask"][:, 1:]  # [B, T-1]
+    token_logprobs = torch.zeros(B, T - 1, device=tensors.device, dtype=torch.float32)
 
     # Chunk along the batch dimension to cap peak logit memory at
     # [chunk_size, T, V] instead of [B, T, V].
     chunk_size = 1024
     for start in range(0, B, chunk_size):
         end = min(start + chunk_size, B)
+        chunk = tensors[start:end]  # slices input_ids + attention_mask together
         with torch.amp.autocast("cuda", dtype=torch.bfloat16):
             logits_chunk = model(
-                input_ids=input_ids[start:end],
-                attention_mask=attention_mask[start:end],
+                input_ids=chunk["input_ids"],
+                attention_mask=chunk["attention_mask"],
             ).logits  # [chunk, T, V]
         shift_logits = logits_chunk[:, :-1, :]  # [chunk, T-1, V]
+        shift_labels = chunk["input_ids"][:, 1:]  # [chunk, T-1]
         gathered = shift_logits.gather(
-            -1, shift_labels[start:end].unsqueeze(-1)
+            -1, shift_labels.unsqueeze(-1)
         ).squeeze(
             -1
         )  # [chunk, T-1]

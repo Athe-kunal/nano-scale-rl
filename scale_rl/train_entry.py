@@ -47,18 +47,17 @@ def main() -> None:
     device_mesh = dist.device_mesh.init_device_mesh("cuda", (world_size,))
 
     # ---- dataset ----
-    if cfg.dataset == "dapo":
-        dataset_id = raw_yaml.get("dataset_id", "open-r1/DAPO-Math-17k-Processed")
-        dataset_config = raw_yaml.get("dataset_config", "all")
-        dataset_split = raw_yaml.get("dataset_split", "train")
-        if rank == 0:
-            logger.info(f"Loading dataset {dataset_id}/{dataset_config} (split={dataset_split}) ...")
-        records = env_cls.load(dataset_id=dataset_id, config_name=dataset_config, split=dataset_split)
-    elif cfg.dataset == "livecodebench":
-        dataset_split = raw_yaml.get("dataset_split", "train")
-        if rank == 0:
-            logger.info(f"Loading livecodebench (split={dataset_split}) ...")
-        records = env_cls.load(dataset_split=dataset_split)
+    # dataset_id/dataset_config are optional overrides; each env class
+    # already defaults to its own dataset (see DapoMathEnv.load /
+    # LiveCodeBenchEnv.load), so most users only ever need to set `dataset`.
+    load_kwargs = {"split": raw_yaml.get("dataset_split", "train")}
+    if "dataset_id" in raw_yaml:
+        load_kwargs["dataset_id"] = raw_yaml["dataset_id"]
+    if "dataset_config" in raw_yaml:
+        load_kwargs["config_name"] = raw_yaml["dataset_config"]
+    if rank == 0:
+        logger.info(f"Loading {cfg.dataset} dataset ({load_kwargs}) ...")
+    records = env_cls.load(**load_kwargs)
 
     prompts = [env.prompt for env in records]
     envs = records

@@ -63,6 +63,7 @@ class TrainerConfig:
     total_steps: int = 1000
     log_every: int = 10
     high_pass_rate_threshold: float = 0.9
+    low_pass_rate_threshold: float = 0.0  # 0 = disabled
 
     # Evaluation
     eval_every: int = 0        # evaluate every N trainer steps (0 = disabled)

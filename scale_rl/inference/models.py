@@ -6,6 +6,7 @@ class ResponseRecord:
     response_ids: list[int]
     inference_logprobs: list[list[float]]
     reward: list[float]
+    finish_reason: str = ""  # "stop" (hit EOS/stop string) or "length" (hit max_tokens)
 
 @dataclass
 class RolloutRecord:

@@ -2,7 +2,7 @@
 # Pipeline RL launcher.
 #
 # Usage:
-#   bash scale_rl/scripts/train.sh [path/to/train.yaml]
+#   bash scale_rl/train.sh [path/to/train.yaml]
 #
 # Starts the vLLM rollout worker on VLLM_GPU_ID, then launches the FSDP
 # trainer with torchrun.  Both processes share an NCCL rendezvous so the
@@ -11,7 +11,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CONFIG="${1:-${SCRIPT_DIR}/train.yaml}"
 
 # ---------------------------------------------------------------------------
@@ -145,6 +145,6 @@ CUDA_VISIBLE_DEVICES="$TRAINER_GPU_IDS" \
 uv run torchrun \
     --nproc-per-node="$NUM_TRAINER_GPUS" \
     --master-port="$MASTER_PORT" \
-    -m scale_rl.scripts.train_entry \
+    -m scale_rl.train_entry \
     --config "$CONFIG" \
     2>&1 | tee "$TRAINER_LOG"
