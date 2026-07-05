@@ -5,6 +5,7 @@ from typing import Any
 
 import aiohttp
 import torch
+from tqdm import tqdm
 from transformers import BatchEncoding, PreTrainedTokenizerBase
 from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.weight_transfer.nccl_engine import (
@@ -195,17 +196,34 @@ class vLLMRollout:
         """Generate `num_samples` completions per prompt concurrently.
 
         Returns a flat list ordered as [prompt_0 × num_samples, prompt_1 × num_samples, ...].
+        The progress bar advances by one prompt once all of its samples land
+        (samples for different prompts can complete out of order).
         """
+        async def _generate_indexed(
+            session: aiohttp.ClientSession, flat_idx: int, prompt_idx: int, prompt: str
+        ) -> tuple[int, int, RolloutRecord]:
+            record = await self.generate(session, prompt, sampling_params, system_prompt)
+            return flat_idx, prompt_idx, record
+
         # A single session is shared across all concurrent requests in this
         # batch (all running under the one event loop that asyncio.run(...)
         # created for this call), so TCP connections get reused.
         async with aiohttp.ClientSession() as session:
             tasks = [
-                self.generate(session, prompt, sampling_params, system_prompt)
-                for prompt in prompts
-                for _ in range(num_samples)
+                _generate_indexed(session, flat_idx, prompt_idx, prompt)
+                for prompt_idx, prompt in enumerate(prompts)
+                for flat_idx in range(prompt_idx * num_samples, (prompt_idx + 1) * num_samples)
             ]
-            return list(await asyncio.gather(*tasks))
+            results: list[RolloutRecord | None] = [None] * len(tasks)
+            landed_per_prompt = [0] * len(prompts)
+            with tqdm(total=len(prompts), desc="generating rollouts") as pbar:
+                for coro in asyncio.as_completed(tasks):
+                    flat_idx, prompt_idx, record = await coro
+                    results[flat_idx] = record
+                    landed_per_prompt[prompt_idx] += 1
+                    if landed_per_prompt[prompt_idx] == num_samples:
+                        pbar.update(1)
+            return results
 
 
 def wait_for_rollout_worker(base_url: str, timeout_s: int = 300) -> None:

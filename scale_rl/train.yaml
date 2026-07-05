@@ -20,7 +20,7 @@ lr: 1.0e-6
 weight_decay: 0.01
 max_grad_norm: 1.0
 gradient_checkpointing: true
-gradient_accumulation_steps: 4   # splits each batch into micro-batches; reduces peak activation memory
+gradient_accumulation_steps: 16   # splits each batch into micro-batches; reduces peak activation memory
 
 # ---------------------------------------------------------------------------
 # RL algorithm
@@ -50,7 +50,7 @@ rollout_worker_url: "http://127.0.0.1:8047"
 # ---------------------------------------------------------------------------
 # Generation (vLLM rollout worker)
 # ---------------------------------------------------------------------------
-max_new_tokens: 1024
+max_new_tokens: 8192
 temperature: 1.0
 top_k: -1              # -1 = disabled
 
