@@ -28,9 +28,13 @@ def _iter_model_parameters(model: Any, fsdp: bool):
             yield name, param
 
 
-def collect_weight_metadata(model: Any, fsdp: bool = False) -> tuple[list[str], list[str], list[list[int]]]:
+def collect_weight_metadata(model: Any) -> tuple[list[str], list[str], list[list[int]]]:
+    # Sharded FSDP parameters are DTensors, whose .shape/.dtype already
+    # reflect the full logical tensor rather than the local shard — so
+    # metadata can be read directly off model.named_parameters() without
+    # calling full_tensor() (which triggers an actual NCCL all-gather).
     names, dtype_names, shapes = [], [], []
-    for name, param in _iter_model_parameters(model, fsdp=fsdp):
+    for name, param in model.named_parameters():
         names.append(name)
         dtype_names.append(_dtype_name(param.dtype))
         shapes.append(list(param.shape))
@@ -96,7 +100,7 @@ class vLLMRollout:
         if hasattr(train_model, "module"):
             train_model = train_model.module
 
-        names, dtype_names, shapes = collect_weight_metadata(train_model, fsdp=fsdp)
+        names, dtype_names, shapes = collect_weight_metadata(train_model)
 
         # mode="abort" drops in-flight rollouts and clears the KV cache, so
         # every future token is generated under the new weights (correct but
@@ -247,16 +251,11 @@ def wait_for_rollout_worker(base_url: str, timeout_s: int = 300) -> None:
 
 def initialize_trainer(
     master_address: str, master_port: int, world_size: int
-) -> tuple[NCCLTrainerSendWeightsArgs, PyNcclCommunicator]:
-    trainer_group = NCCLWeightTransferEngine.trainer_init(
+) -> PyNcclCommunicator:
+    return NCCLWeightTransferEngine.trainer_init(
         dict(
             master_address=master_address,
             master_port=master_port,
             world_size=world_size,
         )
     )
-    trainer_args = NCCLTrainerSendWeightsArgs(
-        group=trainer_group,
-        packed=True,  # use packed broadcasting for efficiency
-    )
-    return trainer_args, trainer_group

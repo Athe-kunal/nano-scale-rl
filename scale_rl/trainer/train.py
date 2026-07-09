@@ -305,7 +305,7 @@ class Trainer:
             # initialize_trainer would deadlock: each side would be waiting
             # for the other to go first. Run them concurrently instead.
             async def _rendezvous() -> Any:
-                _, (_, model_update_group) = await asyncio.gather(
+                _, model_update_group = await asyncio.gather(
                     self.rollout_worker.initialize_weight_transfer(
                         master_address=cfg.master_address,
                         master_port=cfg.weight_transfer_port,
