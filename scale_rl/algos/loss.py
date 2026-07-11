@@ -38,6 +38,7 @@ Add new algorithms by registering them in ALGORITHMS below.
 """
 
 import torch
+from einops import rearrange
 
 
 def compute_advantages(
@@ -95,12 +96,14 @@ def compute_maxrl_advantages(binary_reward: torch.Tensor) -> torch.Tensor:
 
 def _masked_token_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     """DAPO token-mean: sum over all response tokens / count of response tokens."""
-    return (values * mask).sum() / mask.sum().clamp(min=1)
+    total = torch.einsum("b t, b t ->", values, mask)
+    return total / mask.sum().clamp(min=1)
 
 
 def _masked_sequence_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     """GRPO/REINFORCE sequence-mean: per-sample token-mean, then mean over samples."""
-    seq_mean = (values * mask).sum(dim=-1) / mask.sum(dim=-1).clamp(min=1)   # [B]
+    per_seq_sum = torch.einsum("b t, b t -> b", values, mask)   # [B]
+    seq_mean = per_seq_sum / mask.sum(dim=-1).clamp(min=1)      # [B]
     return seq_mean.mean()
 
 
@@ -119,7 +122,7 @@ def grpo_loss(
     # Cast to fp32 for numerically stable exp / min.
     lp = logprobs.float()
     old_lp = old_logprobs.float()
-    adv = advantages.float().unsqueeze(-1)                          # [B, 1]
+    adv = rearrange(advantages.float(), "b -> b 1")
     mask = response_mask.float()
 
     ratio = (lp - old_lp).exp()                                      # [B, T]
@@ -155,7 +158,7 @@ def dapo_loss(
     """DAPO per-token clipped surrogate with asymmetric (clip-higher) bounds."""
     lp = logprobs.float()
     old_lp = old_logprobs.float()
-    adv = advantages.float().unsqueeze(-1)
+    adv = rearrange(advantages.float(), "b -> b 1")
     mask = response_mask.float()
 
     ratio = (lp - old_lp).exp()
@@ -179,7 +182,7 @@ def reinforce_loss(
 ):
     """Per-token REINFORCE with mean-subtracted advantage, sequence-mean aggregated."""
     lp = logprobs.float()
-    adv = advantages.float().unsqueeze(-1)
+    adv = rearrange(advantages.float(), "b -> b 1")
     mask = response_mask.float()
     per_token = -(lp * adv)
     if C > 0.0 and inference_logprobs is not None:
@@ -203,12 +206,12 @@ def gspo_loss(
     """GSPO sequence-level clipped surrogate with length-normalized log-ratio."""
     lp = logprobs.float()
     old_lp = old_logprobs.float()
-    adv = advantages.float().unsqueeze(-1)                          # [B, 1]
+    adv = rearrange(advantages.float(), "b -> b 1")
     mask = response_mask.float()
 
     seq_lengths = mask.sum(dim=-1).clamp(min=1)                     # [B]
-    seq_log_ratio = ((lp - old_lp) * mask).sum(dim=-1) / seq_lengths  # [B]
-    ratio = seq_log_ratio.exp().unsqueeze(-1)                       # [B, 1]
+    seq_log_ratio = torch.einsum("b t, b t -> b", lp - old_lp, mask) / seq_lengths
+    ratio = rearrange(seq_log_ratio.exp(), "b -> b 1")
     clipped = torch.clamp(ratio, 1.0 - clip, 1.0 + clip)            # [B, 1]
     per_seq = -torch.min(ratio * adv, clipped * adv)                # [B, 1]
     if C > 0.0 and inference_logprobs is not None:
@@ -238,7 +241,7 @@ def cispo_loss(
     gradient flows through log π. Token-mean aggregation across the batch."""
     lp = logprobs.float()
     old_lp = old_logprobs.float()
-    adv = advantages.float().unsqueeze(-1)                    # [B, 1]
+    adv = rearrange(advantages.float(), "b -> b 1")
     mask = response_mask.float()
 
     ratio = (lp - old_lp).exp()                               # [B, T]
@@ -267,7 +270,7 @@ def maxrl_loss(
     well-formatted, 0.0 otherwise).
     """
     lp = logprobs.float()
-    adv = advantages.float().unsqueeze(-1)   # [B, 1]
+    adv = rearrange(advantages.float(), "b -> b 1")
     mask = response_mask.float()
     per_token = -(lp * adv)                  # [B, T]
     return _masked_sequence_mean(per_token, mask)
