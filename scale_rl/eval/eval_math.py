@@ -47,7 +47,7 @@ DATASET_CONFIGS = {
 }
 
 
-def _run_eval_one_dataset(
+async def _run_eval_one_dataset(
     dataset_name: str,
     rollout_worker: vLLMRollout,
     eval_k: int,
@@ -71,12 +71,14 @@ def _run_eval_one_dataset(
         A dict with a single `eval/{dataset_name}/pass@{eval_k}` entry.
     """
     cfg = DATASET_CONFIGS[dataset_name]
-    problems: list[dict] = list(load_dataset(cfg["hf_path"], split=cfg["split"]))
+    problems: list[dict] = list(
+        await asyncio.to_thread(load_dataset, cfg["hf_path"], split=cfg["split"])
+    )
     prompts = [p[cfg["problem_col"]] for p in problems]
 
     sampling_params = {"max_tokens": eval_max_tokens, "temperature": temperature, "top_k": top_k, "logprobs": 1}
-    rollouts = asyncio.run(
-        rollout_worker.generate_batch(prompts, eval_k, sampling_params, system_prompt=DEFAULT_SYSTEM_PROMPT)
+    rollouts = await rollout_worker.generate_batch(
+        prompts, eval_k, sampling_params, system_prompt=DEFAULT_SYSTEM_PROMPT
     )
 
     # rollouts is flat: eval_k responses per problem in order
@@ -137,9 +139,9 @@ def run_eval(
         Combined `eval/{dataset_name}/pass@{eval_k}` metrics from every
         dataset in `eval_datasets`.
     """
-    metrics: dict[str, Any] = {}
-    for dataset_name in eval_datasets.split(","):
-        metrics.update(
+
+    async def _run_all() -> list[dict[str, float]]:
+        return await asyncio.gather(*[
             _run_eval_one_dataset(
                 dataset_name=dataset_name.strip(),
                 rollout_worker=rollout_worker,
@@ -149,5 +151,10 @@ def run_eval(
                 temperature=temperature,
                 top_k=top_k,
             )
-        )
+            for dataset_name in eval_datasets.split(",")
+        ])
+
+    metrics: dict[str, Any] = {}
+    for dataset_metrics in asyncio.run(_run_all()):
+        metrics.update(dataset_metrics)
     return metrics
