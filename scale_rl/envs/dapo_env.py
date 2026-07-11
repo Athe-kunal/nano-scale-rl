@@ -114,7 +114,7 @@ class DapoMathEnv(ScaleRLBase):
         step: int,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        from scale_rl.eval.eval_aime_2025 import run_eval
+        from scale_rl.eval.eval_math import run_eval
         return run_eval(
             rollout_worker=rollout_worker,
             step=step,
