@@ -68,6 +68,7 @@ class TrainerConfig:
 
     # Evaluation
     eval_every: int = 0        # evaluate every N trainer steps (0 = disabled)
+    eval_datasets: str = "aime_2025"  # comma-separated: aime_2024,aime_2025,hmmt_2025 (dapo only)
     eval_k: int = 4            # samples per problem, for pass@k
     eval_max_tokens: int = 2048
     eval_temperature: float = 0.6

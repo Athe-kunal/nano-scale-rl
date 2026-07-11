@@ -444,6 +444,9 @@ class Trainer:
                 if cfg.eval_every > 0 and global_step % cfg.eval_every == 0:
                     if self.rank == 0:
                         env_cls = DATASET_ENV_CLS[cfg.dataset]
+                        # eval_datasets (AIME/HMMT) is only meaningful for the DAPO
+                        # math env; livecodebench's evaluate has no such kwarg.
+                        dataset_kwargs = {"eval_datasets": cfg.eval_datasets} if cfg.dataset == "dapo" else {}
                         env_cls.evaluate(
                             rollout_worker=self.rollout_worker,
                             step=global_step,
@@ -451,6 +454,7 @@ class Trainer:
                             eval_max_tokens=cfg.eval_max_tokens,
                             temperature=cfg.eval_temperature,
                             top_k=cfg.eval_top_k,
+                            **dataset_kwargs,
                         )
                     dist.barrier()
 

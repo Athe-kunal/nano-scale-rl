@@ -85,7 +85,8 @@ log_every: 10
 high_pass_rate_threshold: 0.9
 low_pass_rate_threshold: 0.1   # 0 = disabled; prompts with pass_rate <= this are dropped as too hard
 
-eval_every: 50          # evaluate on AIME 2025 every N trainer steps (0 = disabled)
+eval_every: 50          # evaluate every N trainer steps (0 = disabled)
+eval_datasets: "aime_2025,aime_2024,hmmt_2025"  # comma-separated; dapo dataset only, ignored for livecodebench
 eval_k: 4               # samples per problem, for pass@k
 eval_max_tokens: 8192
 eval_temperature: 0.6
