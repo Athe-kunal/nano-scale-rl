@@ -36,6 +36,7 @@ dependencies = [
     "nltk>=3.9.4",
     "seq-len-balance>=0.1.1",
     "tensordict>=0.13.0",
+    "einops>=0.8.2",
 ]
 
 [dependency-groups]

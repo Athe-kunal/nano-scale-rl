@@ -1,6 +1,7 @@
 from typing import Any
 
 import torch
+from einops import rearrange
 from tensordict import TensorDict
 
 
@@ -93,11 +94,12 @@ def get_logprobs(model, tensors: TensorDict, chunk_size: int = 1024):
             ).logits  # [chunk, T, V]
         shift_logits = logits_chunk[:, :-1, :]  # [chunk, T-1, V]
         shift_labels = chunk["input_ids"][:, 1:]  # [chunk, T-1]
-        gathered = shift_logits.gather(
-            -1, shift_labels.unsqueeze(-1)
-        ).squeeze(
-            -1
-        )  # [chunk, T-1]
+        # `gather` is a lookup along the vocab dim, not a contraction, so
+        # einsum doesn't apply here — only the reshape is einops's job.
+        label_index = rearrange(shift_labels, "chunk t -> chunk t 1")
+        gathered = rearrange(
+            shift_logits.gather(-1, label_index), "chunk t 1 -> chunk t"
+        )
         token_logprobs[start:end] = (
             gathered - torch.logsumexp(shift_logits, dim=-1)
         ).float()
